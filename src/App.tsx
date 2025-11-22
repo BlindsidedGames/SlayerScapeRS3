@@ -2,7 +2,8 @@ import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import { relaxedRules } from "./data/config";
-import { areaAchievements, type AchievementTier } from "./data/static/achievements";
+import { areaAchievements, areaAchievementTasks, type AchievementTier } from "./data/static/achievements";
+import { diaryRequirements, diarySets, type DiaryRequirement, type DiarySet } from "./data/static/areaAchievementsExtended";
 import { makeBands, skills as staticSkills } from "./data/static/skills";
 import { sampleQuests } from "./data/static/quests";
 import type { RunState, SlayerMaster, Tile, TileState, TileType } from "./data/models";
@@ -11,9 +12,75 @@ import { db, seedDefaults } from "./store/db";
 type Quest = { id: string; name: string; order: number };
 type SkillDef = { id: string; name: string; maxLevel: number; elite?: boolean };
 type Achievement = { id: string; label: string; tier: AchievementTier };
+type AchievementProgress = { tasks: boolean[] };
+type AchievementTaskEntry = {
+  id: string;
+  area: string;
+  tier: AchievementTier;
+  tasks: string[];
+  total: number;
+  meta?: DiarySet;
+  requirements?: DiaryRequirement;
+};
 
 const QUEST_STRATEGY_URL =
   "https://runescape.wiki/api.php?action=parse&page=Quests/Strategy&prop=text&formatversion=2&format=json&origin=*";
+
+const runemetricsProfileUrl = (player: string) =>
+  `https://apps.runescape.com/runemetrics/profile/profile?user=${encodeURIComponent(player)}&activities=0`;
+
+const hiscoreLiteUrl = (player: string) => `https://secure.runescape.com/m=hiscore/index_lite.ws?player=${encodeURIComponent(player)}`;
+
+const runemetricsQuestsUrl = (player: string) =>
+  `https://apps.runescape.com/runemetrics/quests?user=${encodeURIComponent(player)}`;
+
+const proxyUrls = (url: string) => [
+  // CORS proxy (passes scheme in query)
+  `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  // AllOrigins fallbacks (rate limited; keep after corsproxy)
+  `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}&cacheBust=${Date.now()}`,
+  `https://api.allorigins.win/get?url=${encodeURIComponent(url)}&cacheBust=${Date.now()}`
+];
+
+const hiscoreSkillOrder = [
+  "attack",
+  "defence",
+  "strength",
+  "constitution",
+  "ranged",
+  "prayer",
+  "magic",
+  "cooking",
+  "woodcutting",
+  "fletching",
+  "fishing",
+  "firemaking",
+  "crafting",
+  "smithing",
+  "mining",
+  "herblore",
+  "agility",
+  "thieving",
+  "slayer",
+  "farming",
+  "runecrafting",
+  "hunter",
+  "construction",
+  "summoning",
+  "dungeoneering",
+  "divination",
+  "invention",
+  "archaeology",
+  "necromancy"
+] as const;
+
+const achievementTierOrder: Record<AchievementTier, number> = {
+  beginner: 0,
+  easy: 1,
+  medium: 2,
+  hard: 3,
+  elite: 4
+};
 
 const slugify = (value: string, separator = "-") =>
   value
@@ -25,6 +92,8 @@ const slugify = (value: string, separator = "-") =>
     .replace(new RegExp(`^${separator}|${separator}$`, "g"), "");
 
 const normalizeSkillId = (skillId: string) => slugify(skillId, "_");
+
+const formatTitleCase = (value: string) => value.replace(/\b\w/g, (c) => c.toUpperCase());
 
 const shuffle = <T,>(arr: T[]) => {
   const copy = [...arr];
@@ -165,7 +234,7 @@ const allocateKeyPools = (totalKeys: number): SlayerMaster[] => {
 };
 
 function App() {
-  const { offlineReady, needRefresh, updateServiceWorker } = useRegisterSW();
+  useRegisterSW();
   const [skills, setSkills] = useState<SkillDef[]>(staticSkills);
   const [quests, setQuests] = useState<Quest[]>([]);
   const [questStatus, setQuestStatus] = useState<"idle" | "loading" | "ready" | "error">("loading");
@@ -176,7 +245,11 @@ function App() {
   const [keys, setKeys] = useState(0);
   const [showSkills, setShowSkills] = useState(false);
   const [showQuests, setShowQuests] = useState(false);
+  const [showAchievementDiaries, setShowAchievementDiaries] = useState(false);
   const [showMasters, setShowMasters] = useState(true);
+  const [showUndiscovered, setShowUndiscovered] = useState(true);
+  const [achievementProgress, setAchievementProgress] = useState<Record<string, AchievementProgress>>({});
+  const [expandedAchievementIds, setExpandedAchievementIds] = useState<string[]>([]);
   const [masters, setMasters] = useState<SlayerMaster[]>(slayerMasterSeed);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [selectedTile, setSelectedTile] = useState<string | null>(null);
@@ -185,9 +258,51 @@ function App() {
   const [boardReady, setBoardReady] = useState(false);
   const [restoredBoard, setRestoredBoard] = useState(false);
   const [activeRun, setActiveRun] = useState<RunState | null>(null);
+  const [playerName, setPlayerName] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem("playerName") ?? "";
+  });
+  const [playerLookupStatus, setPlayerLookupStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [playerSkillLevels, setPlayerSkillLevels] = useState<Record<string, number>>({});
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const [resolvedPlayer, setResolvedPlayer] = useState<string | null>(null);
+  const [playerQuestStatus, setPlayerQuestStatus] = useState<Record<string, string>>({});
+  const [playerQuestLookupStatus, setPlayerQuestLookupStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [playerQuestError, setPlayerQuestError] = useState<string | null>(null);
+  const [lastLookupName, setLastLookupName] = useState<string | null>(null);
   const tileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const centerPendingRef = useRef(false);
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const isDraggingRef = useRef(false);
+
+  const normalizeAchievementProgress = useCallback(
+    (taskCount: number, existing?: AchievementProgress): AchievementProgress => ({
+      tasks: Array.from({ length: taskCount }, (_, idx) => existing?.tasks?.[idx] ?? false)
+    }),
+    []
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("achievementProgress");
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, AchievementProgress>;
+        setAchievementProgress(parsed);
+      }
+    } catch (err) {
+      console.error("Failed to restore achievement progress", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem("achievementProgress", JSON.stringify(achievementProgress));
+    } catch (err) {
+      console.error("Failed to persist achievement progress", err);
+    }
+  }, [achievementProgress]);
 
   useEffect(() => {
     const loadState = async () => {
@@ -297,18 +412,181 @@ function App() {
     return entries;
   }, [masters]);
 
+  const orderedSkillsForDisplay = useMemo(() => {
+    const staticOrder = new Map(staticSkills.map((s, idx) => [s.id, idx]));
+    return [...skills].sort((a, b) => {
+      const aIdx = staticOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const bIdx = staticOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return aIdx - bIdx || a.name.localeCompare(b.name);
+    });
+  }, [skills]);
+
   const bands = useMemo(
     () =>
       skills.map((s) => ({
         ...s,
-        bands: makeBands(s.maxLevel, relaxedRules.skillBandSize)
+        bands: makeBands(s.maxLevel, relaxedRules.skillBandSize, s.id === "constitution" ? 10 : 1)
       })),
     [skills]
   );
 
+  const skillCaps = useMemo<Record<string, number>>(
+    () => {
+      const caps: Record<string, number> = {};
+      skills.forEach((s) => {
+        const startLevel = s.id === "constitution" ? 10 : 1;
+        caps[s.id] = startLevel;
+      });
+      board.forEach((t) => {
+        if (t.type !== "skill_band") return;
+        const skillId = t.payload.skill;
+        const band = t.payload.band;
+        const accessible = t.state === "unlocked" || t.state === "claimed";
+        if (!skillId || !band || !accessible) return;
+        const [, end] = band;
+        caps[skillId] = Math.max(caps[skillId] ?? 1, end);
+      });
+      return caps;
+    },
+    [board, skills]
+  );
+
   const achievementsList = useMemo<Achievement[]>(() => areaAchievements.map((a) => ({ id: a.id, label: a.label, tier: a.tier })), []);
 
+  const achievementTaskSets = useMemo<AchievementTaskEntry[]>(
+    () =>
+      areaAchievementTasks.map((entry) => {
+        const meta = diarySets.find((d) => d.id === entry.id);
+        const requirements = diaryRequirements.find((r) => r.id === entry.id);
+        return { ...entry, meta, requirements };
+      }),
+    []
+  );
+
+  const meetsSkillRequirement = useCallback(
+    (skill: string, level: number) => {
+      const value = playerSkillLevels[normalizeSkillId(skill)];
+      return typeof value === "number" ? value >= level : undefined;
+    },
+    [playerSkillLevels]
+  );
+
+  const meetsQuestRequirement = useCallback(
+    (quest: string) => {
+      const status = playerQuestStatus[slugify(quest)];
+      if (!status) return undefined;
+      return status.toLowerCase().includes("complete");
+    },
+    [playerQuestStatus]
+  );
+
+  const achievementsByArea = useMemo(
+    () => {
+      const grouped = new Map<string, AchievementTaskEntry[]>();
+      achievementTaskSets.forEach((entry) => {
+        const list = grouped.get(entry.area) ?? [];
+        list.push(entry);
+        grouped.set(entry.area, list);
+      });
+      return [...grouped.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([area, sets]) => ({
+          area,
+          sets: sets.sort((a, b) => achievementTierOrder[a.tier] - achievementTierOrder[b.tier])
+        }));
+    },
+    [achievementTaskSets]
+  );
+
+  const discoveredAchievementIds = useMemo(() => {
+    const ids = new Set<string>();
+    board.forEach((tile) => {
+      if (tile.type === "achievement" && tile.state !== "hidden") {
+        const achievementId = tile.payload.achievementId as string | undefined;
+        if (achievementId) ids.add(achievementId);
+      }
+    });
+    return ids;
+  }, [board]);
+
+  const achievementProgressSummary = useMemo(() => {
+    let completed = 0;
+    let total = 0;
+    for (const entry of achievementTaskSets) {
+      const progress = normalizeAchievementProgress(entry.tasks.length, achievementProgress[entry.id]);
+      completed += progress.tasks.filter(Boolean).length;
+      total += entry.tasks.length;
+    }
+    return { completed, total };
+  }, [achievementProgress, achievementTaskSets, normalizeAchievementProgress]);
+
+  const getAchievementProgress = useCallback(
+    (setId: string, taskCount: number) => normalizeAchievementProgress(taskCount, achievementProgress[setId]),
+    [achievementProgress, normalizeAchievementProgress]
+  );
+
+  const toggleAchievementTask = useCallback(
+    (setId: string, taskIndex: number, taskCount: number) => {
+      setAchievementProgress((curr) => {
+        const normalized = normalizeAchievementProgress(taskCount, curr[setId]);
+        normalized.tasks[taskIndex] = !normalized.tasks[taskIndex];
+        return { ...curr, [setId]: normalized };
+      });
+    },
+    [normalizeAchievementProgress]
+  );
+
+  const setAllAchievementTasks = useCallback((setId: string, taskCount: number, value: boolean) => {
+    setAchievementProgress((curr) => ({
+      ...curr,
+      [setId]: { tasks: Array.from({ length: taskCount }, () => value) }
+    }));
+  }, []);
+
+  const toggleAchievementExpansion = useCallback((id: string) => {
+    setExpandedAchievementIds((curr) => (curr.includes(id) ? curr.filter((val) => val !== id) : [...curr, id]));
+  }, []);
+
   const orderedQuests = useMemo(() => (quests.length ? quests : questFallback), [quests]);
+  const questTiles = useMemo(() => board.filter((t) => t.type === "quest"), [board]);
+  const questTileMap = useMemo(() => {
+    const map = new Map<string, Tile>();
+    questTiles.forEach((t) => map.set(t.id, t));
+    return map;
+  }, [questTiles]);
+
+  const questEntries = useMemo(
+    () =>
+      orderedQuests.map((q) => ({
+        quest: q,
+        tile: questTileMap.get(q.id)
+      })),
+    [orderedQuests, questTileMap]
+  );
+
+  const questQuestStatus = useMemo(() => {
+    const map = new Map<string, string>();
+    questEntries.forEach(({ quest }) => {
+      const key = slugify(quest.name);
+      const status = playerQuestStatus[key];
+      if (status) map.set(quest.id, status);
+    });
+    return map;
+  }, [playerQuestStatus, questEntries]);
+
+  const formatQuestStatus = (status?: string | null) => {
+    if (!status) return null;
+    return status.charAt(0).toUpperCase() + status.slice(1);
+  };
+
+  const visibleQuests = useMemo(
+    () => questEntries.filter((entry) => entry.tile && entry.tile.state !== "hidden"),
+    [questEntries]
+  );
+
+  const availableQuests = useMemo(() => visibleQuests.filter((entry) => entry.tile?.state === "unlocked"), [visibleQuests]);
+  const unlockableQuests = useMemo(() => visibleQuests.filter((entry) => entry.tile?.state === "locked"), [visibleQuests]);
+  const completedQuests = useMemo(() => visibleQuests.filter((entry) => entry.tile?.state === "claimed"), [visibleQuests]);
 
   const tileLookup = useMemo(() => {
     const map = new Map<string, Tile>();
@@ -422,11 +700,11 @@ function App() {
     setBoardSize(size);
     setSelectedTile(null);
     setHoveredTile(null);
-    setOffset({ x: 0, y: 0 });
     setRestoredBoard(false);
     setGp(0);
     setKeys(0);
     setMasters(allocateKeyPools(requiredKeys));
+    centerPendingRef.current = true;
   }, [achievementsList, bands, orderedQuests]);
 
   useEffect(() => {
@@ -489,6 +767,27 @@ function App() {
     dragRef.current = null;
   };
 
+  const centerOnTile = useCallback((tileId: string) => {
+    const el = tileRefs.current.get(tileId);
+    if (!el) {
+      setOffset({ x: 0, y: 0 });
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const targetX = window.innerWidth / 2;
+    const targetY = window.innerHeight / 2;
+    const dx = targetX - (rect.left + rect.width / 2);
+    const dy = targetY - (rect.top + rect.height / 2);
+    setOffset((prev) => clampOffset({ x: prev.x + dx, y: prev.y + dy }));
+  }, []);
+
+  useLayoutEffect(() => {
+    if (centerPendingRef.current) {
+      centerPendingRef.current = false;
+      centerOnTile("start");
+    }
+  }, [board, centerOnTile]);
+
   const handleCompleteTask = (id: string) => {
     let awarded = 0;
     const updatedMasters = masters.map((m) => {
@@ -544,6 +843,234 @@ function App() {
       setHoveredTile(null);
     }
   };
+
+  const unlockQuestTile = useCallback(
+    (questId: string) => {
+      const target = board.find((t) => t.id === questId && t.state === "locked");
+      if (!target) return;
+      const cost = target.cost ?? 1;
+      if (keys < cost) return;
+
+      setKeys((k) => Math.max(0, k - cost));
+      setBoard((prev) =>
+        prev.map((t) => (t.id === questId && t.state === "locked" ? { ...t, state: "unlocked" as TileState } : t))
+      );
+      setSelectedTile((curr) => (curr === questId ? null : curr));
+      setHoveredTile((curr) => (curr === questId ? null : curr));
+    },
+    [board, keys]
+  );
+
+  const completeQuestTile = useCallback(
+    (questId: string) => {
+      setBoard((prev) => {
+        const target = prev.find((t) => t.id === questId);
+        if (!target || target.type !== "quest" || target.state !== "unlocked") return prev;
+        const updated = prev.map((t) => (t.id === questId ? { ...t, state: "claimed" as TileState } : t));
+        return revealAdjacents(target.coords.x, target.coords.y, updated);
+      });
+      setSelectedTile((curr) => (curr === questId ? null : curr));
+      setHoveredTile((curr) => (curr === questId ? null : curr));
+    },
+    [revealAdjacents]
+  );
+
+  const mapRunemetricsSkills = (skillsArr?: Array<{ name?: string; level?: number }>) => {
+    const map: Record<string, number> = {};
+    (skillsArr ?? []).forEach((s) => {
+      if (!s?.name) return;
+      const key = normalizeSkillId(s.name);
+      if (typeof s.level === "number" && Number.isFinite(s.level)) {
+        map[key] = s.level;
+      }
+    });
+    return map;
+  };
+
+  const fetchWithTimeout = async (url: string, ms = 6000) => {
+    const controller = new AbortController();
+    const id = window.setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { cache: "no-store", signal: controller.signal, mode: "cors", credentials: "omit" });
+    } finally {
+      clearTimeout(id);
+    }
+  };
+
+  const tryFetchJson = async (url: string) => {
+    for (const proxied of proxyUrls(url)) {
+      try {
+        const res = await fetchWithTimeout(proxied);
+        if (!res.ok || res.status === 429) continue;
+        if (proxied.includes("/get?")) {
+          const wrapper = await res.json().catch(() => null);
+          if (wrapper?.contents) return JSON.parse(wrapper.contents);
+        } else {
+          return await res.json();
+        }
+      } catch (err) {
+        // try next proxy
+      }
+    }
+    return null;
+  };
+
+  const tryFetchText = async (url: string) => {
+    for (const proxied of proxyUrls(url)) {
+      try {
+        const res = await fetchWithTimeout(proxied);
+        if (!res.ok || res.status === 429) continue;
+        if (proxied.includes("/get?")) {
+          const wrapper = await res.json().catch(() => null);
+          if (wrapper?.contents) return wrapper.contents as string;
+        } else {
+          return res.text();
+        }
+      } catch (err) {
+        // try next proxy
+      }
+    }
+    return null;
+  };
+
+  const mapHiscoreSkills = (csv: string) => {
+    const map: Record<string, number> = {};
+    const lines = csv.trim().split(/\r?\n/);
+    const startIndex = 1; // line 0 is overall/total
+    hiscoreSkillOrder.forEach((id, idx) => {
+      const line = lines[idx + startIndex];
+      if (!line) return;
+      const parts = line.split(",");
+      const level = Number(parts[1]);
+      if (Number.isFinite(level)) {
+        map[id] = level;
+      }
+    });
+    return map;
+  };
+
+  const lookupPlayerSkills = useCallback(async () => {
+    const name = playerName.trim();
+    if (!name) return;
+    setPlayerLookupStatus("loading");
+    setPlayerError(null);
+    setResolvedPlayer(null);
+    setPlayerSkillLevels({});
+    try {
+      const data = await tryFetchJson(runemetricsProfileUrl(name));
+      if (data && !data.error && Array.isArray(data.skills)) {
+        const mapped = mapRunemetricsSkills(data.skills);
+        if (Object.keys(mapped).length) {
+          setPlayerSkillLevels(mapped);
+          setPlayerLookupStatus("ready");
+          setResolvedPlayer((data as { name?: string })?.name || name);
+          setLastLookupName(name.toLowerCase());
+          return;
+        }
+      }
+    } catch (err) {
+      // fall through to hiscore
+    }
+
+    try {
+      const text = await tryFetchText(hiscoreLiteUrl(name));
+      if (text) {
+        const mapped = mapHiscoreSkills(text);
+        if (Object.keys(mapped).length) {
+          setPlayerSkillLevels(mapped);
+          setPlayerLookupStatus("ready");
+          setResolvedPlayer(name);
+          setLastLookupName(name.toLowerCase());
+          return;
+        }
+      }
+      setPlayerLookupStatus("error");
+      setPlayerError("No skill data found");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setPlayerLookupStatus("error");
+      setPlayerError(message);
+    }
+  }, [playerName]);
+
+  const mapRunemetricsQuests = (questsArr?: Array<{ title?: string; status?: string }>) => {
+    const map: Record<string, string> = {};
+    (questsArr ?? []).forEach((q) => {
+      if (!q?.title) return;
+      const key = slugify(q.title);
+      if (q.status) {
+        map[key] = q.status.toLowerCase();
+      }
+    });
+    return map;
+  };
+
+  const lookupPlayerQuests = useCallback(async () => {
+    const name = playerName.trim();
+    if (!name) return;
+    setPlayerQuestLookupStatus("loading");
+    setPlayerQuestError(null);
+    const data = await tryFetchJson(runemetricsQuestsUrl(name));
+    const questArray = Array.isArray(data) ? data : Array.isArray(data?.quests) ? data.quests : null;
+    console.info("[Runemetrics quests] Raw response", { player: name, data });
+    if (questArray) {
+      const mapped = mapRunemetricsQuests(questArray);
+      console.info("[Runemetrics quests] Parsed quest map", mapped);
+      if (Object.keys(mapped).length) {
+        setPlayerQuestStatus(mapped);
+        setPlayerQuestLookupStatus("ready");
+        setLastLookupName(name.toLowerCase());
+        return;
+      }
+    }
+    const error = (data as { error?: string })?.error || "Quest data not available";
+    console.warn("[Runemetrics quests] Quest data not available", { player: name, data, questArray });
+    setPlayerQuestLookupStatus("error");
+    setPlayerQuestError(error);
+  }, [playerName]);
+
+  const lookupPlayerData = useCallback(() => {
+    lookupPlayerSkills();
+    lookupPlayerQuests();
+  }, [lookupPlayerQuests, lookupPlayerSkills]);
+
+  const handleOpenQuests = useCallback(() => {
+    setShowQuests(true);
+    void lookupPlayerQuests();
+  }, [lookupPlayerQuests]);
+
+  useEffect(() => {
+    if (!playerName.trim()) return;
+    setPlayerLookupStatus("idle");
+    setPlayerQuestLookupStatus("idle");
+  }, [playerName]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("playerName", playerName);
+  }, [playerName]);
+
+  useEffect(() => {
+    if (
+      showSkills &&
+      playerName.trim() &&
+      playerLookupStatus === "idle" &&
+      playerName.trim().toLowerCase() !== lastLookupName
+    ) {
+      lookupPlayerData();
+    }
+  }, [lastLookupName, lookupPlayerData, playerLookupStatus, playerName, showSkills]);
+
+  useEffect(() => {
+    if (
+      showQuests &&
+      playerName.trim() &&
+      playerQuestLookupStatus === "idle" &&
+      playerName.trim().toLowerCase() !== lastLookupName
+    ) {
+      lookupPlayerQuests();
+    }
+  }, [lastLookupName, lookupPlayerQuests, playerName, playerQuestLookupStatus, showQuests]);
 
   const handleTileSelect = (tileId: string) => {
     setSelectedTile((prev) => (prev === tileId ? null : tileId));
@@ -680,12 +1207,12 @@ function App() {
                       </div>
                       {tile.state === "locked" && (
                         <div className="tile-overlay lock" aria-hidden="true">
-                          🔒
+                          <img src="/icons/lock.png" alt="" />
                         </div>
                       )}
                       {tile.state === "claimed" && (
                         <div className="tile-overlay tick" aria-hidden="true">
-                          ✓
+                          <img src="/icons/check.png" alt="" />
                         </div>
                       )}
                     </>
@@ -698,46 +1225,69 @@ function App() {
       </div>
 
       <div className="overlay">
-        <div className="hud">
-          <div className="hud-left">
-            <div className="stat">
-              <img className="stat-icon" src={getCoinIcon(gp)} alt="Gold pieces" />
-              <span className="value">{numberFormatter.format(gp)}</span>
-              <span className="stat-label">gp</span>
-            </div>
-            <div className="stat">
-              <img className="key-icon" src="/icons/slayer-key.png" alt="Keys" />
-              <span className="value">{keys}</span>
-            </div>
-            <button className="pill-btn" onClick={() => setShowMasters((v) => !v)}>
-              {showMasters ? "Hide" : "Show"} Slayer Masters
-            </button>
-            <button className="pill-btn" onClick={generateBoard}>
-              Reset Board
-            </button>
-            <button className="pill-btn" onClick={() => setOffset({ x: 0, y: 0 })}>
-              Center Board
-            </button>
-            <button className="pill-btn" onClick={revealEntireBoard}>
-              Reveal Board
-            </button>
+        <div className="hud-float top-left">
+          <div className="stat">
+            <img className="stat-icon" src={getCoinIcon(gp)} alt="Gold pieces" />
+            <span className="value">{numberFormatter.format(gp)}</span>
+            <span className="stat-label">gp</span>
           </div>
-          <div className="hud-right">
-            <button className="pill-btn" onClick={() => setShowSkills(true)}>
-              <img className="pill-icon" src="/icons/skills-icon.png" alt="" aria-hidden="true" />
-              Unlocked Skills
-            </button>
-            <button className="pill-btn" onClick={() => setShowQuests(true)}>
-              <img className="pill-icon" src="/icons/quest-icon.png" alt="" aria-hidden="true" />
-              Unlocked Quests
-            </button>
-            {needRefresh && (
-              <button className="pill-btn" onClick={() => updateServiceWorker(true)}>
-                Update App
-              </button>
-            )}
-            {offlineReady && <span className="stat">Offline ready</span>}
+          <div className="stat">
+            <img className="key-icon" src="/icons/slayer-key.png" alt="Keys" />
+            <span className="value">{keys}</span>
           </div>
+          <button
+            className="icon-btn"
+            onClick={() => setShowMasters((v) => !v)}
+            aria-label={showMasters ? "Hide Slayer Masters" : "Show Slayer Masters"}
+          >
+            <img src="/icons/skills/slayer.png" alt="" aria-hidden="true" />
+          </button>
+        </div>
+        <div className="hud-float top-right">
+          <form
+            className="player-inline compact"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (playerLookupStatus === "loading") return;
+              lookupPlayerData();
+            }}
+          >
+            <input
+              className="player-inline-input"
+              type="text"
+              placeholder="Player name"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              onFocus={(e) => e.target.select()}
+            />
+            <button className="pill-btn small" type="submit" disabled={!playerName.trim() || playerLookupStatus === "loading"}>
+              {playerLookupStatus === "loading" ? "Fetching..." : "Lookup"}
+            </button>
+          </form>
+          <button className="icon-btn framed" onClick={() => setShowSkills(true)} aria-label="Unlocked Skills">
+            <img src="/icons/skills-icon.png" alt="" aria-hidden="true" />
+          </button>
+          <button
+            className="icon-btn framed"
+            onClick={() => setShowAchievementDiaries(true)}
+            aria-label="Achievement Diaries"
+          >
+            <img src="/icons/achievement.png" alt="" aria-hidden="true" />
+          </button>
+          <button className="icon-btn framed" onClick={handleOpenQuests} aria-label="Unlocked Quests">
+            <img src="/icons/quest.png" alt="" aria-hidden="true" />
+          </button>
+        </div>
+        <div className="hud-float bottom-right">
+          <button className="pill-btn" onClick={generateBoard}>
+            Reset Board
+          </button>
+          <button className="pill-btn" onClick={() => centerOnTile("start")}>
+            Center Board
+          </button>
+          <button className="pill-btn" onClick={revealEntireBoard}>
+            Reveal Board
+          </button>
         </div>
 
         {showMasters && (
@@ -846,28 +1396,194 @@ function App() {
 
       {showSkills && (
         <div className="modal-backdrop" role="presentation">
-          <div className="modal">
+          <div className="modal skills-modal">
             <div className="modal-header">
               <div className="modal-title">Skills & Caps</div>
               <button className="close" onClick={() => setShowSkills(false)}>
                 X
               </button>
             </div>
-            <p className="muted" style={{ marginBottom: 8 }}>
-              Source: {skillStatus === "ready" ? "RS Wiki cargo (live)" : "Fallback data"} - Band size {relaxedRules.skillBandSize}
-            </p>
-            <div className="list" style={{ maxHeight: "60vh", overflow: "auto" }}>
-              {bands.map((s) => {
+            <div className="player-status muted">
+              {playerLookupStatus === "loading"
+                ? "Fetching stats..."
+                : playerLookupStatus === "ready" && resolvedPlayer
+                ? `Showing stats for ${resolvedPlayer}`
+                : playerLookupStatus === "error"
+                ? `Could not load stats${playerError ? `: ${playerError}` : ""}`
+                : playerName.trim()
+                ? `Ready to fetch stats for ${playerName}`
+                : "Set a player name in the HUD to load stats"}
+            </div>
+            <div className="skills-grid">
+              {orderedSkillsForDisplay.map((s) => {
                 const icon = getSkillIcon(s.id);
+                const cap = skillCaps[s.id] ?? (s.id === "constitution" ? 10 : 1);
+                const atMax = cap >= s.maxLevel;
+                const normalizedId = normalizeSkillId(s.id);
+                const playerLevel = playerSkillLevels[normalizedId];
                 return (
-                  <div key={s.id} className="list-row">
-                    <span>
-                      {icon ? <img className="tiny-icon" src={icon} alt={s.name} /> : null}
-                      <span>{s.name}</span>
-                    </span>
-                    <span className="muted">
-                      cap {s.maxLevel} - {s.bands.length} bands
-                    </span>
+                  <div
+                    key={s.id}
+                    className={`skill-chip${s.elite ? " elite" : ""}${atMax ? " maxed" : ""}`}
+                    title={`${s.name}: ${playerLevel ?? "-"} / ${cap}`}
+                  >
+                    <div className="skill-icon">
+                      {icon ? <img src={icon} alt={s.name} /> : <span className="skill-letter">{s.name[0]}</span>}
+                    </div>
+                    <div className="skill-level">
+                      <span className="level-value">{playerLevel ?? "-"}</span>
+                      <span className="level-cap">/ {cap}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAchievementDiaries && (
+      <div className="modal-backdrop" role="presentation">
+          <div className="modal quests-modal achievements-modal">
+            <div className="modal-header">
+              <div className="modal-title">Achievement Diaries</div>
+              <button className="close" onClick={() => setShowAchievementDiaries(false)}>
+                X
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              Manually track area achievements. Expand a tier to see requirements and tick off tasks as you finish them.
+              <br />
+              Progress: {achievementProgressSummary.completed}/{achievementProgressSummary.total} tasks
+            </p>
+            <div className="achievement-toolbar">
+              <label className="achievement-toggle">
+                <input type="checkbox" checked={showUndiscovered} onChange={(e) => setShowUndiscovered(e.target.checked)} />
+                <span>Show undiscovered diaries</span>
+              </label>
+            </div>
+            <div className="quest-sections">
+              {achievementsByArea.map(({ area, sets }) => {
+                const filteredSets = showUndiscovered
+                  ? sets
+                  : sets.filter((entry) => {
+                      const progress = getAchievementProgress(entry.id, entry.tasks.length);
+                      const isDiscovered = discoveredAchievementIds.has(entry.id) || progress.tasks.some(Boolean);
+                      return isDiscovered;
+                    });
+                if (!filteredSets.length) return null;
+                const totalTasks = filteredSets.reduce((sum, s) => sum + s.tasks.length, 0);
+                return (
+                  <div key={area} className="quest-section">
+                    <div className="section-head">
+                      <span>{area}</span>
+                      <span className="muted">{totalTasks} tasks</span>
+                    </div>
+                    <div className="quest-list">
+                      {filteredSets.map((entry) => {
+                        const progress = getAchievementProgress(entry.id, entry.tasks.length);
+                        const checkedCount = progress.tasks.filter(Boolean).length;
+                        const isDiscovered = discoveredAchievementIds.has(entry.id) || progress.tasks.some(Boolean);
+                        const allDone = entry.tasks.length > 0 && checkedCount === entry.tasks.length;
+                        const isExpanded = expandedAchievementIds.includes(entry.id);
+                        const requirement = entry.requirements;
+                        return (
+                          <div key={entry.id} className={`quest-card achievement-card${allDone ? " completed" : ""}`}>
+                            <div className="quest-info">
+                              <div className="quest-name">{`${formatTitleCase(entry.tier)} ${entry.area}`}</div>
+                              <div className="quest-meta muted">
+                                {checkedCount}/{entry.tasks.length} tasks
+                                {entry.meta?.points ? ` · ${entry.meta.points} pts` : ""}
+                                {entry.meta?.members === false ? " · F2P" : ""}
+                              </div>
+                              {entry.meta?.description ? <div className="muted">{entry.meta.description}</div> : null}
+                            </div>
+                            <div className="quest-actions">
+                              <button className="pill-btn small" onClick={() => toggleAchievementExpansion(entry.id)} aria-expanded={isExpanded}>
+                                {isExpanded ? "Hide" : "View"}
+                              </button>
+                              <button
+                                className="pill-btn small"
+                                onClick={() => setAllAchievementTasks(entry.id, entry.tasks.length, !allDone)}
+                                disabled={!entry.tasks.length}
+                              >
+                                {allDone ? "Reset" : "Mark all"}
+                              </button>
+                            </div>
+                            {isExpanded && (
+                              <div className="achievement-body">
+                                {requirement ? (
+                                  <div className="achievement-reqs">
+                                    <div>
+                                      <strong>Skills</strong>
+                                      <div className="req-chips">
+                                        {requirement.skills.length
+                                          ? requirement.skills.map((s, idx) => {
+                                              const met = meetsSkillRequirement(s.skill, s.level);
+                                              return (
+                                                <span key={`${entry.id}-skill-${idx}`} className={`req-chip${met ? " met" : ""}`}>
+                                                  <span className="req-name">{s.skill}</span>
+                                                  <span className="req-level">
+                                                    {s.level}
+                                                    {s.boostable ? "*" : ""}
+                                                  </span>
+                                                </span>
+                                              );
+                                            })
+                                          : "None"}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <strong>Quests</strong>
+                                      <div className="req-chips">
+                                        {requirement.quests.length
+                                          ? requirement.quests.map((q, idx) => {
+                                              const met = meetsQuestRequirement(q);
+                                              return (
+                                                <span key={`${entry.id}-quest-${idx}`} className={`req-chip${met ? " met" : ""}`}>
+                                                  <span className="req-name">{q}</span>
+                                                </span>
+                                              );
+                                            })
+                                          : "None"}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <strong>Items</strong>
+                                      <div className="req-chips muted">
+                                        {requirement.items.length ? requirement.items.join(", ") : "None"}
+                                      </div>
+                                    </div>
+                                    {requirement.notes ? (
+                                      <div>
+                                        <strong>Notes</strong>
+                                        <div className="muted">{requirement.notes}</div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+                                <div className="task-grid">
+                                  {entry.tasks.map((task, idx) => {
+                                    const taskId = `${entry.id}-${idx}`;
+                                    return (
+                                      <label key={taskId} className="task-line">
+                                        <input
+                                          type="checkbox"
+                                          checked={progress.tasks[idx]}
+                                          onChange={() => toggleAchievementTask(entry.id, idx, entry.tasks.length)}
+                                        />
+                                        <span className="task-text">{task}</span>
+                                      </label>
+                                    );
+                                  })}
+                                  {!entry.tasks.length && <div className="empty-state">No task list for this tier yet.</div>}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
               })}
@@ -878,22 +1594,110 @@ function App() {
 
       {showQuests && (
         <div className="modal-backdrop" role="presentation">
-          <div className="modal">
+          <div className="modal quests-modal">
             <div className="modal-header">
               <div className="modal-title">Quests</div>
               <button className="close" onClick={() => setShowQuests(false)}>
                 X
               </button>
             </div>
-            <p className="muted" style={{ marginBottom: 8 }}>
-              Source: {questStatus === "ready" ? "RS Wiki quest strategy (ordered)" : "Fallback data"} - {orderedQuests.length} entries
+            <p className="muted" style={{ marginBottom: 12 }}>
+              Shows quests you can act on right now. Source: {questStatus === "ready" ? "RS Wiki quest strategy (ordered)" : "Fallback data"}.
+              {playerName.trim() ? ` Player: ${resolvedPlayer ?? playerName}.` : ""}
+              {playerQuestLookupStatus === "loading"
+                ? " Fetching quest status..."
+                : playerQuestLookupStatus === "error"
+                ? ` Quest status unavailable${playerQuestError ? `: ${playerQuestError}` : ""}.`
+                : ""}
             </p>
-            <div className="list" style={{ maxHeight: "60vh", overflow: "auto" }}>
-              {orderedQuests.map((q) => (
-                <div key={q.id} className="list-row">
-                  <span className="muted">#{q.order + 1}</span> {q.name}
+            <div className="quest-sections">
+              <div className="quest-section">
+                <div className="section-head">
+                  <span>Available now</span>
+                  <span className="muted">{availableQuests.length} ready</span>
                 </div>
-              ))}
+                <div className="quest-list">
+                  {availableQuests.length ? (
+                    availableQuests.map(({ quest }) => (
+                      <div key={quest.id} className="quest-card">
+                        <div className="quest-info">
+                          <div className="quest-name">{quest.name}</div>
+                          <div className="quest-meta muted">#{quest.order + 1}</div>
+                          {questQuestStatus.get(quest.id) ? (
+                            <div className="quest-status-tag">{formatQuestStatus(questQuestStatus.get(quest.id))}</div>
+                          ) : null}
+                        </div>
+                        <div className="quest-actions">
+                          <button className="pill-btn" onClick={() => completeQuestTile(quest.id)}>
+                            Complete
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-state">No quests unlocked right now.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="quest-section">
+                <div className="section-head">
+                  <span>Unlockable</span>
+                  <span className="muted">Visible locked quests</span>
+                </div>
+                <div className="quest-list">
+                  {unlockableQuests.length ? (
+                    unlockableQuests.map(({ quest, tile }) => {
+                      const cost = tile?.cost ?? 1;
+                      const canUnlock = tile?.state === "locked" && keys >= cost;
+                      const questStatusLabel = questQuestStatus.get(quest.id);
+                      return (
+                        <div key={quest.id} className="quest-card">
+                          <div className="quest-info">
+                            <div className="quest-name">{quest.name}</div>
+                            <div className="quest-meta muted">#{quest.order + 1} - Cost {cost} key{cost > 1 ? "s" : ""}</div>
+                            {questStatusLabel ? <div className="quest-status-tag">{formatQuestStatus(questStatusLabel)}</div> : null}
+                          </div>
+                          <div className="quest-actions">
+                            <button className="pill-btn" disabled={!canUnlock} onClick={() => unlockQuestTile(quest.id)}>
+                              Unlock
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="empty-state">No visible locked quests yet.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="quest-section">
+                <div className="section-head">
+                  <span>Completed</span>
+                  <span className="muted">{completedQuests.length}</span>
+                </div>
+                <div className="quest-list completed">
+                  {completedQuests.length ? (
+                    completedQuests.map(({ quest }) => (
+                      <div key={quest.id} className="quest-card completed">
+                        <div className="quest-info">
+                          <div className="quest-name">{quest.name}</div>
+                          <div className="quest-meta muted">#{quest.order + 1}</div>
+                          {questQuestStatus.get(quest.id) ? (
+                            <div className="quest-status-tag">{formatQuestStatus(questQuestStatus.get(quest.id))}</div>
+                          ) : null}
+                        </div>
+                        <div className="quest-actions">
+                          <span className="quest-status">Done</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-state">No quests completed yet.</div>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -910,3 +1714,4 @@ const tileClass = (state: TileState) => {
 };
 
 export default App;
+

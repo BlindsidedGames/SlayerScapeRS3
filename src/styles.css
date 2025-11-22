@@ -101,6 +101,78 @@ a {
   pointer-events: none;
 }
 
+.hud-float {
+  position: fixed;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  z-index: 12;
+  pointer-events: none;
+}
+
+.hud-float > * {
+  pointer-events: auto;
+}
+
+.hud-float.top-left {
+  top: 16px;
+  left: 16px;
+  flex-wrap: wrap;
+}
+
+.hud-float.top-right {
+  top: 16px;
+  right: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.hud-float.bottom-right {
+  bottom: 16px;
+  right: 16px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: #2a221d;
+  border: 1px solid #3a2f24;
+  display: grid;
+  place-items: center;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  padding: 8px;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.icon-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.35);
+}
+
+.icon-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.hud-float.top-right .icon-btn:not(.framed) {
+  width: 62px;
+  height: 62px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.hud-float.top-right .icon-btn:not(.framed):hover {
+  transform: none;
+  box-shadow: none;
+}
+
 .hud {
   display: flex;
   justify-content: space-between;
@@ -168,6 +240,11 @@ a {
   transition: transform 120ms ease, box-shadow 120ms ease;
   z-index: 10;
   pointer-events: auto;
+}
+
+.pill-btn.small {
+  padding: 7px 10px;
+  font-size: 13px;
 }
 
 .pill-btn:hover {
@@ -528,6 +605,20 @@ a {
   color: #9fd36f;
 }
 
+.tile-overlay.tick img {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+}
+
+.tile-overlay.lock img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+}
+
 .floating-tooltip {
   position: fixed;
   transform: translate(-50%, calc(-100% - 10px));
@@ -645,6 +736,18 @@ a {
   z-index: 40;
 }
 
+.modal.skills-modal {
+  width: min(640px, 94vw);
+}
+
+.modal.quests-modal {
+  width: min(760px, 96vw);
+}
+
+.modal.achievements-modal {
+  width: min(760px, 96vw);
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -690,4 +793,291 @@ a {
   display: inline-block;
   margin-right: 6px;
   vertical-align: middle;
+}
+
+.player-lookup {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.player-input,
+.player-inline-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #3a2f24;
+  background: #241d18;
+  color: var(--text);
+}
+
+.player-inline {
+  display: grid;
+  grid-template-columns: 180px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.player-inline.compact {
+  grid-template-columns: 160px auto;
+}
+
+.player-inline-input {
+  height: 38px;
+}
+
+.player-status {
+  grid-column: 1 / -1;
+  font-size: 12px;
+}
+
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 4px;
+}
+
+.skill-chip {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: radial-gradient(circle at 20% 20%, rgba(244, 197, 106, 0.08), transparent 45%),
+    radial-gradient(circle at 80% 0%, rgba(159, 211, 111, 0.05), transparent 50%), #241d18;
+  border: 1px solid #3a2f24;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+.skill-chip.elite {
+  border-color: rgba(159, 211, 111, 0.35);
+  box-shadow: 0 12px 24px rgba(159, 211, 111, 0.12);
+}
+
+.skill-chip.maxed .level-value {
+  color: var(--accent-2);
+}
+
+.skill-icon {
+  width: 60px;
+  height: 60px;
+  border-radius: 12px;
+  background: #2a221d;
+  border: 1px solid #3a2f24;
+  display: grid;
+  place-items: center;
+}
+
+.skill-icon img {
+  width: 80%;
+  height: 80%;
+  object-fit: contain;
+}
+
+.skill-letter {
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.skill-level {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.level-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.level-max {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.level-cap {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.quest-sections {
+  display: grid;
+  gap: 14px;
+  max-height: 64vh;
+  overflow: auto;
+  padding: 6px 2px;
+}
+
+.quest-section {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #211913;
+  border: 1px solid #3a2f24;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.quest-list {
+  display: grid;
+  gap: 10px;
+}
+
+.quest-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #241d18;
+  border: 1px solid #3a2f24;
+}
+
+.quest-card.completed {
+  opacity: 0.75;
+}
+
+.achievement-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.achievement-body {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.achievement-reqs {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.req-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.req-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d9d9d9;
+  font-size: 13px;
+}
+
+.req-chip .req-level {
+  font-weight: 600;
+}
+
+.req-chip.met {
+  color: #7ae1a3;
+  background: rgba(122, 225, 163, 0.12);
+}
+
+.task-grid {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+}
+
+.task-line {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.task-line input {
+  margin-top: 2px;
+}
+
+.achievement-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.achievement-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.quest-info {
+  display: grid;
+  gap: 4px;
+}
+
+.quest-name {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.quest-meta {
+  font-size: 12px;
+}
+
+.quest-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quest-status {
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.quest-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(44, 36, 30, 0.8);
+  border: 1px solid rgba(244, 197, 106, 0.25);
+  font-size: 12px;
+  text-transform: capitalize;
+  width: fit-content;
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+  padding: 10px;
+  border-radius: 10px;
+  background: #1e1712;
+  border: 1px dashed #3a2f24;
 }
