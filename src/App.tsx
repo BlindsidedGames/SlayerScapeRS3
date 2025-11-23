@@ -6,13 +6,15 @@ import { areaAchievements, areaAchievementTasks, type AchievementTier } from "./
 import { diaryRequirements, diarySets, type DiaryRequirement, type DiarySet } from "./data/static/areaAchievementsExtended";
 import { makeBands, skills as staticSkills } from "./data/static/skills";
 import { sampleQuests } from "./data/static/quests";
-import type { RunState, SlayerMaster, Tile, TileState, TileType } from "./data/models";
+import type { AchievementProgress, RunState, SlayerMaster, Tile, TileState, TileType } from "./data/models";
 import { db, seedDefaults } from "./store/db";
+import { exportAll, importBundle, type ExportBundle } from "./store/export";
+import { APP_VERSION } from "./version";
+import { changelogEntries } from "./changelog";
 
-type Quest = { id: string; name: string; order: number };
+type Quest = { id: string; name: string; order: number; quickGuide?: string };
 type SkillDef = { id: string; name: string; maxLevel: number; elite?: boolean };
 type Achievement = { id: string; label: string; tier: AchievementTier };
-type AchievementProgress = { tasks: boolean[] };
 type AchievementTaskEntry = {
   id: string;
   area: string;
@@ -21,6 +23,11 @@ type AchievementTaskEntry = {
   total: number;
   meta?: DiarySet;
   requirements?: DiaryRequirement;
+};
+
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
 const QUEST_STRATEGY_URL =
@@ -74,6 +81,19 @@ const hiscoreSkillOrder = [
   "necromancy"
 ] as const;
 
+const EXEMPT_SKILL_IDS = [
+  "attack",
+  "strength",
+  "defence",
+  "constitution",
+  "ranged",
+  "magic",
+  "prayer",
+  "summoning",
+  "slayer",
+  "necromancy"
+];
+
 const achievementTierOrder: Record<AchievementTier, number> = {
   beginner: 0,
   easy: 1,
@@ -94,6 +114,13 @@ const slugify = (value: string, separator = "-") =>
 const normalizeSkillId = (skillId: string) => slugify(skillId, "_");
 
 const formatTitleCase = (value: string) => value.replace(/\b\w/g, (c) => c.toUpperCase());
+
+const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, "")}`;
+
+const quickGuideUrl = (title: string) => {
+  const sanitized = title.trim().replace(/\s+/g, "_");
+  return `https://runescape.wiki/w/${encodeURIComponent(sanitized)}/Quick_guide`;
+};
 
 const shuffle = <T,>(arr: T[]) => {
   const copy = [...arr];
@@ -122,22 +149,75 @@ const slayerMasterSeed: MasterSeed[] = [
 ];
 
 const typeIcons = {
-  quest: "/icons/quest.png",
-  achievement: "/icons/achievement.png",
-  utility: "/icons/slayer-key.png"
+  quest: assetPath("icons/quest.png"),
+  achievement: assetPath("icons/achievement.png"),
+  utility: assetPath("icons/slayer-key.png")
 };
 
+const wikiIcon = assetPath("icons/wiki.jpg");
+
+const RELAXED_RULES_STORAGE_KEY = "relaxed-rules-seen:v1";
+
+const relaxedRulesSections = [
+  {
+    title: "Core loop",
+    bullets: [
+      "Slayer tasks grant Slayer Keys that you spend to unlock visible tiles on the fogged board.",
+      "Tiles cover skill bands, quests, achievement sets, or utility unlocks; claiming a tile reveals its neighbors."
+    ]
+  },
+  {
+    title: "Skills & XP",
+    bullets: [
+      "Non-combat training stops at the highest unlocked band for that skill.",
+      "Supply skills (Herblore, Cooking, Crafting, etc.) can overcap if you only use recipes inside the unlocked band.",
+      "Combat skills can rise past a band while you are on-task; quest XP and lamps can overcap but higher bands stay locked for usage."
+    ]
+  },
+  {
+    title: "Quests & achievements",
+    bullets: [
+      "Only start or complete a quest or diary tier when its tile is unlocked.",
+      "Accidental progress before unlocking is fine - formally unlock and claim when you recognize it."
+    ]
+  },
+  {
+    title: "Slayer & combat",
+    bullets: [
+      "Only Slayer tasks generate Slayer Keys.",
+      "Off-task combat never yields keys and should be quick detours for requirements; use any Slayer master you qualify for.",
+      "Stay on assignment when possible to keep progression tied to Slayer tasks."
+    ]
+  },
+  {
+    title: "Loot & economy",
+    bullets: [
+      "On-task ground items in the task area are always allowed.",
+      "Off-task, stick to quest-critical items instead of farming drops.",
+      "Trading, GE, and shops are all allowed - avoid using them to bypass locked tiles."
+    ]
+  },
+  {
+    title: "Unlock costs & failures",
+    bullets: [
+      "Typical costs: skill band 1 key; quests 1-2 keys; late quests or achievements 2-3 keys.",
+      "You may only unlock visible tiles; claimed tiles reveal adjacent options.",
+      "Relaxed mode adds no extra death penalty."
+    ]
+  }
+] as const;
+
 const coinIconBrackets = [
-  { threshold: 10000, src: "/icons/coins/coins-10000.png" },
-  { threshold: 1000, src: "/icons/coins/coins-1000.png" },
-  { threshold: 250, src: "/icons/coins/coins-250.png" },
-  { threshold: 100, src: "/icons/coins/coins-100.png" },
-  { threshold: 25, src: "/icons/coins/coins-25.png" },
-  { threshold: 5, src: "/icons/coins/coins-5.png" },
-  { threshold: 4, src: "/icons/coins/coins-4.png" },
-  { threshold: 3, src: "/icons/coins/coins-3.png" },
-  { threshold: 2, src: "/icons/coins/coins-2.png" },
-  { threshold: 1, src: "/icons/coins/coins-1.png" }
+  { threshold: 10000, src: assetPath("icons/coins/coins-10000.png") },
+  { threshold: 1000, src: assetPath("icons/coins/coins-1000.png") },
+  { threshold: 250, src: assetPath("icons/coins/coins-250.png") },
+  { threshold: 100, src: assetPath("icons/coins/coins-100.png") },
+  { threshold: 25, src: assetPath("icons/coins/coins-25.png") },
+  { threshold: 5, src: assetPath("icons/coins/coins-5.png") },
+  { threshold: 4, src: assetPath("icons/coins/coins-4.png") },
+  { threshold: 3, src: assetPath("icons/coins/coins-3.png") },
+  { threshold: 2, src: assetPath("icons/coins/coins-2.png") },
+  { threshold: 1, src: assetPath("icons/coins/coins-1.png") }
 ] as const;
 
 const getCoinIcon = (amount: number) => {
@@ -156,7 +236,8 @@ const clampOffset = (offset: { x: number; y: number }, limit = 1200) => ({
 const questFallback: Quest[] = sampleQuests.map((q, idx) => ({
   id: q.id,
   name: q.name,
-  order: idx
+  order: idx,
+  quickGuide: quickGuideUrl(q.name)
 }));
 
 const parseQuestStrategyHtml = (html?: string): Quest[] => {
@@ -167,7 +248,7 @@ const parseQuestStrategyHtml = (html?: string): Quest[] => {
   return rows
     .map((row, idx) => {
       const title = row.getAttribute("data-rowid") || row.querySelector("a[title]")?.getAttribute("title") || `Quest ${idx + 1}`;
-      return { id: `quest-${slugify(title)}`, name: title, order: idx };
+      return { id: `quest-${slugify(title)}`, name: title, order: idx, quickGuide: quickGuideUrl(title) };
     })
     .filter((quest, idx, list) => quest.name && list.findIndex((q) => q.id === quest.id) === idx);
 };
@@ -241,11 +322,21 @@ function App() {
   const [skillStatus, setSkillStatus] = useState<"idle" | "loading" | "ready" | "error">("loading");
   const [board, setBoard] = useState<Tile[]>([]);
   const [boardSize, setBoardSize] = useState(9);
+  const [exemptSkillIds, setExemptSkillIds] = useState<string[]>(EXEMPT_SKILL_IDS);
+  const [showExemptModal, setShowExemptModal] = useState(false);
+  const [pendingBoardAction, setPendingBoardAction] = useState<"none" | "generate">("none");
+  const [boardCaps, setBoardCaps] = useState<Record<string, number> | null>(null);
   const [gp, setGp] = useState(0);
   const [keys, setKeys] = useState(0);
   const [showSkills, setShowSkills] = useState(false);
   const [showQuests, setShowQuests] = useState(false);
   const [showAchievementDiaries, setShowAchievementDiaries] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
+  const [showRules, setShowRules] = useState(false);
+  const [hasSeenRules, setHasSeenRules] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem(RELAXED_RULES_STORAGE_KEY) === "true";
+  });
   const [showMasters, setShowMasters] = useState(true);
   const [showUndiscovered, setShowUndiscovered] = useState(true);
   const [achievementProgress, setAchievementProgress] = useState<Record<string, AchievementProgress>>({});
@@ -258,6 +349,14 @@ function App() {
   const [boardReady, setBoardReady] = useState(false);
   const [restoredBoard, setRestoredBoard] = useState(false);
   const [activeRun, setActiveRun] = useState<RunState | null>(null);
+  const [dataMessage, setDataMessage] = useState<string | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [showChangelog, setShowChangelog] = useState(false);
+  const [collapsedVersions, setCollapsedVersions] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(changelogEntries.map((entry, idx) => [entry.version, idx > 0]))
+  );
   const [playerName, setPlayerName] = useState(() => {
     if (typeof window === "undefined") return "";
     return localStorage.getItem("playerName") ?? "";
@@ -270,8 +369,14 @@ function App() {
   const [playerQuestLookupStatus, setPlayerQuestLookupStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [playerQuestError, setPlayerQuestError] = useState<string | null>(null);
   const [lastLookupName, setLastLookupName] = useState<string | null>(null);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installStatus, setInstallStatus] = useState<string | null>(null);
+  const boardRef = useRef<HTMLDivElement>(null);
+  const offsetRef = useRef(offset);
+  const boardTransformRef = useRef(`translate(${offset.x}px, ${offset.y}px)`);
   const tileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const centerPendingRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const isDraggingRef = useRef(false);
 
@@ -305,32 +410,83 @@ function App() {
   }, [achievementProgress]);
 
   useEffect(() => {
-    const loadState = async () => {
-      try {
-        await seedDefaults();
-        const run = await db.runs.get("demo-run");
-        const savedBoard = run ? await db.boards.get(run.boardId) : null;
-        if (run) {
-          setActiveRun(run);
-          setGp(run.gp ?? 0);
-          setKeys(run.keys ?? 0);
-          if (run.masters?.length) setMasters(run.masters);
-          if (run.offset) setOffset(clampOffset(run.offset));
-          if (run.boardSize) setBoardSize(run.boardSize);
-        }
-        if (savedBoard?.tiles?.length) {
-          setBoard(savedBoard.tiles);
-          setBoardSize(boardDimensionFromTiles(savedBoard.tiles));
-          setRestoredBoard(true);
-        }
-      } catch (err) {
-        console.error("Failed to load saved state", err);
-      } finally {
-        setBoardReady(true);
-      }
+    offsetRef.current = offset;
+    boardTransformRef.current = `translate(${offset.x}px, ${offset.y}px)`;
+    const boardEl = boardRef.current;
+    if (boardEl) {
+      boardEl.style.transform = boardTransformRef.current;
+    }
+  }, [offset]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (hasSeenRules) {
+      localStorage.setItem(RELAXED_RULES_STORAGE_KEY, "true");
+    }
+  }, [hasSeenRules]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleBeforeInstall = (event: Event) => {
+      event.preventDefault();
+      setInstallStatus(null);
+      setInstallPrompt(event as BeforeInstallPromptEvent);
     };
-    loadState();
+    const handleAppInstalled = () => {
+      setInstallPrompt(null);
+      setInstallStatus("App installed");
+    };
+    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
+    window.addEventListener("appinstalled", handleAppInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
   }, []);
+
+  const hydrateFromDb = useCallback(async () => {
+    try {
+      await seedDefaults();
+      const run = (await db.runs.get("demo-run")) ?? (await db.runs.toCollection().first());
+      const savedBoard = run ? await db.boards.get(run.boardId) : null;
+      const fallbackBoardSize = run?.boardSize ?? 9;
+      const savedCaps = savedBoard?.skillCapOverrides ?? null;
+
+      setActiveRun(run ?? null);
+      setGp(run?.gp ?? 0);
+      setKeys(run?.keys ?? 0);
+      setMasters(run?.masters?.length ? run.masters : slayerMasterSeed);
+      setOffset(run?.offset ? clampOffset(run.offset) : { x: 0, y: 0 });
+
+      if (savedBoard?.tiles?.length) {
+        const derivedSize = boardDimensionFromTiles(savedBoard.tiles);
+        setBoard(savedBoard.tiles);
+        setBoardSize(derivedSize || fallbackBoardSize);
+        setBoardCaps(savedCaps);
+        setRestoredBoard(true);
+      } else {
+        setBoard([]);
+        setBoardSize(fallbackBoardSize);
+        setBoardCaps(null);
+        setRestoredBoard(false);
+      }
+    } catch (err) {
+      console.error("Failed to load saved state", err);
+    } finally {
+      setBoardReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void hydrateFromDb();
+  }, [hydrateFromDb]);
+
+  useEffect(() => {
+    if (!boardReady) return;
+    if (!hasSeenRules) {
+      setShowRules(true);
+    }
+  }, [boardReady, hasSeenRules]);
 
   useEffect(() => {
     const fetchQuests = async () => {
@@ -388,7 +544,7 @@ function App() {
     const entries: Record<string, string> = {};
     const registerIcon = (id: string) => {
       const normalized = normalizeSkillId(id);
-      entries[normalized] = `/icons/skills/${normalized}.png`;
+      entries[normalized] = assetPath(`icons/skills/${normalized}.png`);
     };
 
     staticSkills.forEach((s) => registerIcon(s.id));
@@ -407,19 +563,60 @@ function App() {
   const masterIconMap = useMemo(() => {
     const entries: Record<string, string> = {};
     [...masters, ...slayerMasterSeed].forEach((m) => {
-      entries[m.avatar] = `/icons/slayer-masters/${m.avatar}.png`;
+      entries[m.avatar] = assetPath(`icons/slayer-masters/${m.avatar}.png`);
     });
     return entries;
   }, [masters]);
 
   const orderedSkillsForDisplay = useMemo(() => {
-    const staticOrder = new Map(staticSkills.map((s, idx) => [s.id, idx]));
+    const skillDisplayOrder = [
+      "attack",
+      "constitution",
+      "mining",
+      "strength",
+      "agility",
+      "smithing",
+      "defence",
+      "herblore",
+      "fishing",
+      "ranged",
+      "thieving",
+      "cooking",
+      "prayer",
+      "crafting",
+      "firemaking",
+      "magic",
+      "fletching",
+      "woodcutting",
+      "runecrafting",
+      "slayer",
+      "farming",
+      "construction",
+      "hunter",
+      "summoning",
+      "dungeoneering",
+      "divination",
+      "invention",
+      "archaeology",
+      "necromancy"
+    ];
+    const explicitOrder = new Map(skillDisplayOrder.map((id, idx) => [id, idx]));
+    const fallbackOrder = new Map(staticSkills.map((s, idx) => [s.id, idx + skillDisplayOrder.length]));
     return [...skills].sort((a, b) => {
-      const aIdx = staticOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER;
-      const bIdx = staticOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      const aIdx = explicitOrder.get(a.id) ?? fallbackOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const bIdx = explicitOrder.get(b.id) ?? fallbackOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER;
       return aIdx - bIdx || a.name.localeCompare(b.name);
     });
   }, [skills]);
+
+  const exemptOptions = useMemo(
+    () =>
+      EXEMPT_SKILL_IDS.map((id) => {
+        const normalized = normalizeSkillId(id);
+        return skills.find((s) => normalizeSkillId(s.id) === normalized) ?? { id, name: formatTitleCase(id), maxLevel: 99 };
+      }),
+    [skills]
+  );
 
   const bands = useMemo(
     () =>
@@ -435,7 +632,8 @@ function App() {
       const caps: Record<string, number> = {};
       skills.forEach((s) => {
         const startLevel = s.id === "constitution" ? 10 : 1;
-        caps[s.id] = startLevel;
+        const override = boardCaps?.[s.id];
+        caps[s.id] = typeof override === "number" ? override : startLevel;
       });
       board.forEach((t) => {
         if (t.type !== "skill_band") return;
@@ -448,7 +646,7 @@ function App() {
       });
       return caps;
     },
-    [board, skills]
+    [board, boardCaps, skills]
   );
 
   const achievementsList = useMemo<Achievement[]>(() => areaAchievements.map((a) => ({ id: a.id, label: a.label, tier: a.tier })), []);
@@ -543,6 +741,21 @@ function App() {
     }));
   }, []);
 
+  const normalizeAchievementProgressMap = useCallback(
+    (incoming?: Record<string, AchievementProgress>) => {
+      const next: Record<string, AchievementProgress> = {};
+      achievementTaskSets.forEach((entry) => {
+        next[entry.id] = normalizeAchievementProgress(entry.tasks.length, incoming?.[entry.id]);
+      });
+      return next;
+    },
+    [achievementTaskSets, normalizeAchievementProgress]
+  );
+
+  const toggleChangelogVersion = useCallback((version: string) => {
+    setCollapsedVersions((curr) => ({ ...curr, [version]: !curr[version] }));
+  }, []);
+
   const toggleAchievementExpansion = useCallback((id: string) => {
     setExpandedAchievementIds((curr) => (curr.includes(id) ? curr.filter((val) => val !== id) : [...curr, id]));
   }, []);
@@ -599,126 +812,143 @@ function App() {
     [board]
   );
 
-  const generateBoard = useCallback(() => {
-    const questCount = Math.max(orderedQuests.length, 1);
-    const skillTiles = bands.flatMap((skill) =>
-      skill.bands.map((band) => ({
-        priority: band[0],
+  const generateBoard = useCallback(
+    (selectedExempt?: string[]) => {
+      const exemptSet = new Set((selectedExempt ?? exemptSkillIds).map(normalizeSkillId));
+      const questCount = Math.max(orderedQuests.length, 1);
+      const baseCaps: Record<string, number> = {};
+      const skillTiles = bands.flatMap((skill) => {
+        const normalized = normalizeSkillId(skill.id);
+        const startLevel = skill.id === "constitution" ? 10 : 1;
+        if (exemptSet.has(normalized)) {
+          baseCaps[skill.id] = skill.maxLevel;
+          return [];
+        }
+        baseCaps[skill.id] = startLevel;
+        return skill.bands.map((band) => ({
+          priority: band[0],
+          tile: {
+            id: `skill-${skill.id}-${band[0]}-${band[1]}`,
+            type: "skill_band" as TileType,
+            payload: { label: `${skill.name} ${band[0]}-${band[1]}`, skill: skill.id, band },
+            coords: { x: 0, y: 0 },
+            cost: 1,
+            state: "hidden" as TileState
+          }
+        }));
+      });
+
+      const questTiles = orderedQuests.map((q) => ({
+        priority: (q.order / questCount) * 120,
         tile: {
-          id: `skill-${skill.id}-${band[0]}-${band[1]}`,
-          type: "skill_band" as TileType,
-          payload: { label: `${skill.name} ${band[0]}-${band[1]}`, skill: skill.id, band },
+          id: q.id,
+          type: "quest" as TileType,
+          payload: { label: q.name, questId: q.id },
           coords: { x: 0, y: 0 },
           cost: 1,
           state: "hidden" as TileState
         }
-      }))
-    );
+      }));
 
-    const questTiles = orderedQuests.map((q) => ({
-      priority: (q.order / questCount) * 120,
-      tile: {
-        id: q.id,
-        type: "quest" as TileType,
-        payload: { label: q.name, questId: q.id },
-        coords: { x: 0, y: 0 },
-        cost: 1,
-        state: "hidden" as TileState
-      }
-    }));
-
-    const achievementTiles = achievementsList.map((ach, idx) => ({
-      priority: achievementBias[ach.tier] + idx * 0.05,
-      tile: {
-        id: `achievement-${ach.id}`,
-        type: "achievement" as TileType,
-        payload: { label: ach.label, achievementId: ach.id },
-        coords: { x: 0, y: 0 },
-        cost: 1,
-        state: "hidden" as TileState
-      }
-    }));
-
-    const freeTiles = Array.from({ length: FREE_TILE_COUNT }, (_, idx) => {
-      const priority = idx < 2 ? 0.5 + idx * 0.25 : 6 + (idx - 2) * 2;
-      return {
-        priority,
+      const achievementTiles = achievementsList.map((ach, idx) => ({
+        priority: achievementBias[ach.tier] + idx * 0.05,
         tile: {
-          id: `free-${idx}`,
-          type: "utility" as TileType,
-          payload: { label: "Free tile" },
+          id: `achievement-${ach.id}`,
+          type: "achievement" as TileType,
+          payload: { label: ach.label, achievementId: ach.id },
           coords: { x: 0, y: 0 },
-          cost: 0,
+          cost: 1,
           state: "hidden" as TileState
         }
-      };
-    });
+      }));
 
-    const combined = [...skillTiles, ...achievementTiles, ...questTiles, ...freeTiles]
-      .map((entry) => ({ ...entry, priority: entry.priority + Math.random() * 4 }))
-      .sort((a, b) => a.priority - b.priority || a.tile.id.localeCompare(b.tile.id));
-
-    const requiredKeys = skillTiles.length + questTiles.length + achievementTiles.length;
-    const totalTiles = combined.length + 1; // include the start tile
-    const size = nextOdd(Math.max(7, Math.ceil(Math.sqrt(totalTiles + 6))));
-    const center = Math.floor(size / 2);
-    const coordsByRing: Record<number, Array<{ x: number; y: number; d: number; angle: number }>> = {};
-    coordsByDistance(size)
-      .filter((c) => !(c.x === center && c.y === center))
-      .forEach((coord) => {
-        coordsByRing[coord.d] = coordsByRing[coord.d] ?? [];
-        coordsByRing[coord.d].push(coord);
+      const freeTiles = Array.from({ length: FREE_TILE_COUNT }, (_, idx) => {
+        const priority = idx < 2 ? 0.5 + idx * 0.25 : 6 + (idx - 2) * 2;
+        return {
+          priority,
+          tile: {
+            id: `free-${idx}`,
+            type: "utility" as TileType,
+            payload: { label: "Free tile" },
+            coords: { x: 0, y: 0 },
+            cost: 0,
+            state: "hidden" as TileState
+          }
+        };
       });
 
-    const ringOrder = Object.keys(coordsByRing)
-      .map(Number)
-      .sort((a, b) => a - b);
-    const coords = ringOrder.flatMap((d) => shuffle(coordsByRing[d]));
+      const combined = [...skillTiles, ...achievementTiles, ...questTiles, ...freeTiles]
+        .map((entry) => ({ ...entry, priority: entry.priority + Math.random() * 4 }))
+        .sort((a, b) => a.priority - b.priority || a.tile.id.localeCompare(b.tile.id));
 
-    const placedTiles: Tile[] = combined.map((entry, idx) => {
-      const coord = coords[idx] ?? coords[coords.length - 1];
-      const distance = Math.abs(coord.x - center) + Math.abs(coord.y - center);
-      const initialState: TileState = distance === 1 ? "locked" : "hidden";
-      return {
-        ...entry.tile,
-        coords: { x: coord.x, y: coord.y },
-        cost: entry.tile.cost ?? 1,
-        state: initialState
+      const requiredKeys = skillTiles.length + questTiles.length + achievementTiles.length;
+      const totalTiles = combined.length + 1; // include the start tile
+      const size = nextOdd(Math.max(7, Math.ceil(Math.sqrt(totalTiles + 6))));
+      const center = Math.floor(size / 2);
+      const coordsByRing: Record<number, Array<{ x: number; y: number; d: number; angle: number }>> = {};
+      coordsByDistance(size)
+        .filter((c) => !(c.x === center && c.y === center))
+        .forEach((coord) => {
+          coordsByRing[coord.d] = coordsByRing[coord.d] ?? [];
+          coordsByRing[coord.d].push(coord);
+        });
+
+      const ringOrder = Object.keys(coordsByRing)
+        .map(Number)
+        .sort((a, b) => a - b);
+      const coords = ringOrder.flatMap((d) => shuffle(coordsByRing[d]));
+
+      const placedTiles: Tile[] = combined.map((entry, idx) => {
+        const coord = coords[idx] ?? coords[coords.length - 1];
+        const distance = Math.abs(coord.x - center) + Math.abs(coord.y - center);
+        const initialState: TileState = distance === 1 ? "locked" : "hidden";
+        return {
+          ...entry.tile,
+          coords: { x: coord.x, y: coord.y },
+          cost: entry.tile.cost ?? 1,
+          state: initialState
+        };
+      });
+
+      const startTile: Tile = {
+        id: "start",
+        type: "utility",
+        payload: { label: "Start" },
+        coords: { x: center, y: center },
+        cost: 0,
+        state: "claimed"
       };
-    });
 
-    const startTile: Tile = {
-      id: "start",
-      type: "utility",
-      payload: { label: "Start" },
-      coords: { x: center, y: center },
-      cost: 0,
-      state: "claimed"
-    };
-
-    setBoard([startTile, ...placedTiles]);
-    setBoardSize(size);
-    setSelectedTile(null);
-    setHoveredTile(null);
-    setRestoredBoard(false);
-    setGp(0);
-    setKeys(0);
-    setMasters(allocateKeyPools(requiredKeys));
-    centerPendingRef.current = true;
-  }, [achievementsList, bands, orderedQuests]);
+      setBoard([startTile, ...placedTiles]);
+      setBoardCaps(baseCaps);
+      setBoardSize(size);
+      setSelectedTile(null);
+      setHoveredTile(null);
+      setRestoredBoard(false);
+      setGp(0);
+      setKeys(0);
+      setMasters(allocateKeyPools(requiredKeys));
+      centerPendingRef.current = true;
+    },
+    [achievementsList, bands, exemptSkillIds, orderedQuests]
+  );
 
   useEffect(() => {
     if (!boardReady || restoredBoard) return;
+    if (!hasSeenRules) return;
     if (questStatus === "loading" || questStatus === "idle") return;
     if (skillStatus === "loading" || skillStatus === "idle") return;
     if (board.length > 0) return;
-    generateBoard();
-  }, [board.length, boardReady, generateBoard, questStatus, restoredBoard, skillStatus]);
+    if (pendingBoardAction === "generate") return;
+    setPendingBoardAction("generate");
+    setShowExemptModal(true);
+  }, [board.length, boardReady, hasSeenRules, pendingBoardAction, questStatus, restoredBoard, skillStatus]);
 
-  const activeTileId = selectedTile ?? hoveredTile;
-  const activeTile = useMemo(() => board.find((t) => t.id === activeTileId) ?? null, [board, activeTileId]);
-  const selectionLocked = selectedTile === activeTile?.id;
-  const activeSkillIcon = getSkillIcon(activeTile?.payload.skill);
+const activeTileId = selectedTile ?? hoveredTile;
+const activeTile = useMemo(() => board.find((t) => t.id === activeTileId) ?? null, [board, activeTileId]);
+const selectionLocked = selectedTile === activeTile?.id;
+const activeSkillIcon = getSkillIcon(activeTile?.payload.skill);
+const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeTile.payload.label) : null;
 
   const updateTooltipPosition = useCallback(() => {
     if (!activeTileId) {
@@ -744,7 +974,12 @@ function App() {
   }, [updateTooltipPosition]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    dragRef.current = { startX: e.clientX, startY: e.clientY, originX: offset.x, originY: offset.y };
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: offsetRef.current.x,
+      originY: offsetRef.current.y
+    };
     isDraggingRef.current = false;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
@@ -759,12 +994,24 @@ function App() {
       setSelectedTile(null);
       setHoveredTile(null);
     }
-    setOffset({ x: dragRef.current.originX + dx, y: dragRef.current.originY + dy });
+    const nextOffset = clampOffset({ x: dragRef.current.originX + dx, y: dragRef.current.originY + dy });
+    offsetRef.current = nextOffset;
+    boardTransformRef.current = `translate(${nextOffset.x}px, ${nextOffset.y}px)`;
+    if (boardRef.current) {
+      boardRef.current.style.transform = boardTransformRef.current;
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     dragRef.current = null;
+    if (isDraggingRef.current) {
+      isDraggingRef.current = false;
+      setOffset((prev) => {
+        if (prev.x === offsetRef.current.x && prev.y === offsetRef.current.y) return prev;
+        return offsetRef.current;
+      });
+    }
   };
 
   const centerOnTile = useCallback((tileId: string) => {
@@ -818,6 +1065,63 @@ function App() {
       return t;
     });
   };
+
+  const convertLegacyBoard = useCallback(() => {
+    if (boardCaps) return;
+    const exemptSet = new Set(exemptSkillIds.map(normalizeSkillId));
+    const overrides: Record<string, number> = {};
+    skills.forEach((s) => {
+      const normalized = normalizeSkillId(s.id);
+      const startLevel = s.id === "constitution" ? 10 : 1;
+      overrides[s.id] = exemptSet.has(normalized) ? s.maxLevel : startLevel;
+    });
+
+    let refunded = 0;
+    const revealTargets: Array<{ x: number; y: number }> = [];
+    let updatedBoard = board.map((t) => {
+      if (t.type !== "skill_band") return t;
+      const skillId = t.payload.skill;
+      if (!skillId) return t;
+      const normalized = normalizeSkillId(skillId);
+      if (!exemptSet.has(normalized)) return t;
+      if (t.state === "unlocked" || t.state === "claimed") {
+        refunded += t.cost ?? 1;
+      }
+      revealTargets.push({ x: t.coords.x, y: t.coords.y });
+      return { ...t, state: "claimed" as TileState };
+    });
+
+    revealTargets.forEach(({ x, y }) => {
+      updatedBoard = revealAdjacents(x, y, updatedBoard);
+    });
+
+    if (refunded > 0) {
+      setKeys((k) => k + refunded);
+    }
+
+    setBoard(updatedBoard);
+    setBoardCaps(overrides);
+    setSelectedTile(null);
+    setHoveredTile(null);
+  }, [board, boardCaps, exemptSkillIds, revealAdjacents, skills]);
+
+  const toggleExemptSkill = useCallback((skillId: string) => {
+    setExemptSkillIds((prev) => {
+      const exists = prev.includes(skillId);
+      if (exists) return prev.filter((id) => id !== skillId);
+      return [...prev, skillId];
+    });
+  }, []);
+
+  const handleUseDefaultExempt = useCallback(() => {
+    setExemptSkillIds(EXEMPT_SKILL_IDS);
+  }, []);
+
+  const handleConfirmExempt = useCallback(() => {
+    generateBoard(exemptSkillIds);
+    setPendingBoardAction("none");
+    setShowExemptModal(false);
+  }, [exemptSkillIds, generateBoard]);
 
   const handleTileAction = (tile: Tile | null) => {
     if (!tile || tile.state === "hidden" || tile.state === "claimed") return;
@@ -1105,7 +1409,14 @@ function App() {
   );
 
   const persistState = useCallback(
-    async (nextBoard = board, nextGp = gp, nextKeys = keys, nextMasters = masters, nextOffset = offset) => {
+    async (
+      nextBoard = board,
+      nextGp = gp,
+      nextKeys = keys,
+      nextMasters = masters,
+      nextOffset = offset,
+      nextCaps = boardCaps
+    ) => {
       try {
         const now = new Date().toISOString();
         const clampedOffset = clampOffset(nextOffset);
@@ -1135,7 +1446,8 @@ function App() {
             id: baseRun.boardId,
             name: "Starter Board",
             adjacency: "4-way",
-            tiles: nextBoard
+            tiles: nextBoard,
+            skillCapOverrides: nextCaps ?? undefined
           });
           await db.runs.put(updatedRun);
         });
@@ -1144,24 +1456,126 @@ function App() {
         console.error("Failed to persist state", err);
       }
     },
-    [activeRun, board, boardSize, gp, keys, masters, offset]
+    [activeRun, board, boardCaps, boardSize, gp, keys, masters, offset]
   );
 
   useEffect(() => {
     if (!boardReady) return;
-    persistState(board, gp, keys, masters, offset);
-  }, [board, gp, keys, masters, offset, boardReady, persistState]);
+    persistState(board, gp, keys, masters, offset, boardCaps);
+  }, [board, boardCaps, gp, keys, masters, offset, boardReady, persistState]);
+
+  const handleInstallClick = useCallback(async () => {
+    if (!installPrompt) {
+      setInstallStatus("Install prompt not available. Use the browser menu to install.");
+      return;
+    }
+    try {
+      await installPrompt.prompt();
+      const choice = await installPrompt.userChoice;
+      setInstallStatus(
+        choice?.outcome === "accepted"
+          ? "Install started—confirm in your browser."
+          : "Install dismissed."
+      );
+    } catch (err) {
+      console.error("Install prompt failed", err);
+      setInstallStatus("Could not show the install prompt. Try your browser menu.");
+    } finally {
+      setInstallPrompt(null);
+    }
+  }, [installPrompt]);
+
+  const handleExportData = useCallback(async () => {
+    try {
+      setDataError(null);
+      setDataMessage(null);
+      setIsExporting(true);
+      const normalizedProgress = normalizeAchievementProgressMap(achievementProgress);
+      const bundle = await exportAll({
+        achievementProgress: normalizedProgress,
+        playerName: playerName.trim() || undefined,
+        version: APP_VERSION
+      });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const versionTag = `v${bundle.version || APP_VERSION}`;
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `slayerscape-${versionTag}-export-${timestamp}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setDataMessage(`Exported data (v${bundle.version}).`);
+    } catch (err) {
+      console.error("Failed to export data", err);
+      setDataError("Export failed. Check console for details.");
+    } finally {
+      setIsExporting(false);
+    }
+  }, [achievementProgress, normalizeAchievementProgressMap, playerName]);
+
+  const handleImportClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleImportFile = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      setIsImporting(true);
+      setDataMessage(null);
+      setDataError(null);
+      setBoardReady(false);
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as ExportBundle;
+        if (!Array.isArray((parsed as { runs?: unknown }).runs) || !Array.isArray(parsed.boards) || !Array.isArray(parsed.rules)) {
+          throw new Error("Invalid export file: missing runs, boards, or rules.");
+        }
+        await importBundle(parsed);
+        setAchievementProgress(normalizeAchievementProgressMap(parsed.achievementProgress));
+        if (parsed.playerName) setPlayerName(parsed.playerName);
+        await hydrateFromDb();
+        setDataMessage(`Import complete${parsed.version ? ` (v${parsed.version})` : ""}.`);
+      } catch (err: unknown) {
+        console.error("Failed to import data", err);
+        const message = err instanceof Error ? err.message : "Import failed. Please use a valid export file.";
+        setDataError(message);
+      } finally {
+        setIsImporting(false);
+        setBoardReady(true);
+        event.target.value = "";
+      }
+    },
+    [hydrateFromDb, normalizeAchievementProgressMap]
+  );
+
+  const handleCloseRules = useCallback(() => {
+    setShowRules(false);
+    setHasSeenRules(true);
+    if (!restoredBoard && board.length === 0 && questStatus !== "loading" && questStatus !== "idle" && skillStatus !== "loading" && skillStatus !== "idle") {
+      setPendingBoardAction("generate");
+      setShowExemptModal(true);
+    }
+  }, [board.length, questStatus, restoredBoard, skillStatus]);
+
+  const handleOpenRules = useCallback(() => {
+    setShowRules(true);
+  }, []);
 
   return (
     <div className="stage">
       <div className="board-layer">
         <div
           className="board-full"
+          ref={boardRef}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onDragStart={(e) => e.preventDefault()}
-          style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+          style={{ transform: boardTransformRef.current }}
         >
           <div
             className="board"
@@ -1207,12 +1621,12 @@ function App() {
                       </div>
                       {tile.state === "locked" && (
                         <div className="tile-overlay lock" aria-hidden="true">
-                          <img src="/icons/lock.png" alt="" />
+                          <img src={assetPath("icons/lock.png")} alt="" />
                         </div>
                       )}
                       {tile.state === "claimed" && (
                         <div className="tile-overlay tick" aria-hidden="true">
-                          <img src="/icons/check.png" alt="" />
+                          <img src={assetPath("icons/check.png")} alt="" />
                         </div>
                       )}
                     </>
@@ -1232,7 +1646,7 @@ function App() {
             <span className="stat-label">gp</span>
           </div>
           <div className="stat">
-            <img className="key-icon" src="/icons/slayer-key.png" alt="Keys" />
+            <img className="key-icon" src={assetPath("icons/slayer-key.png")} alt="Keys" />
             <span className="value">{keys}</span>
           </div>
           <button
@@ -1240,7 +1654,7 @@ function App() {
             onClick={() => setShowMasters((v) => !v)}
             aria-label={showMasters ? "Hide Slayer Masters" : "Show Slayer Masters"}
           >
-            <img src="/icons/skills/slayer.png" alt="" aria-hidden="true" />
+            <img src={assetPath("icons/skills/slayer.png")} alt="" aria-hidden="true" />
           </button>
         </div>
         <div className="hud-float top-right">
@@ -1260,35 +1674,30 @@ function App() {
               onChange={(e) => setPlayerName(e.target.value)}
               onFocus={(e) => e.target.select()}
             />
-            <button className="pill-btn small" type="submit" disabled={!playerName.trim() || playerLookupStatus === "loading"}>
-              {playerLookupStatus === "loading" ? "Fetching..." : "Lookup"}
-            </button>
-          </form>
-          <button className="icon-btn framed" onClick={() => setShowSkills(true)} aria-label="Unlocked Skills">
-            <img src="/icons/skills-icon.png" alt="" aria-hidden="true" />
+          <button className="pill-btn small" type="submit" disabled={!playerName.trim() || playerLookupStatus === "loading"}>
+            {playerLookupStatus === "loading" ? "Fetching..." : "Lookup"}
           </button>
-          <button
-            className="icon-btn framed"
-            onClick={() => setShowAchievementDiaries(true)}
-            aria-label="Achievement Diaries"
-          >
-            <img src="/icons/achievement.png" alt="" aria-hidden="true" />
-          </button>
-          <button className="icon-btn framed" onClick={handleOpenQuests} aria-label="Unlocked Quests">
-            <img src="/icons/quest.png" alt="" aria-hidden="true" />
-          </button>
-        </div>
-        <div className="hud-float bottom-right">
-          <button className="pill-btn" onClick={generateBoard}>
-            Reset Board
-          </button>
-          <button className="pill-btn" onClick={() => centerOnTile("start")}>
-            Center Board
-          </button>
-          <button className="pill-btn" onClick={revealEntireBoard}>
-            Reveal Board
-          </button>
-        </div>
+        </form>
+        <button className="icon-btn framed" onClick={() => setShowSkills(true)} aria-label="Unlocked Skills">
+          <img src={assetPath("icons/skills-icon.png")} alt="" aria-hidden="true" />
+        </button>
+        <button className="icon-btn framed" onClick={handleOpenQuests} aria-label="Unlocked Quests">
+          <img src={assetPath("icons/quest.png")} alt="" aria-hidden="true" />
+        </button>
+        <button
+          className="icon-btn framed"
+          onClick={() => setShowAchievementDiaries(true)}
+          aria-label="Achievement Diaries"
+        >
+          <img src={assetPath("icons/achievement.png")} alt="" aria-hidden="true" />
+        </button>
+        <button className="icon-btn framed" onClick={handleOpenRules} aria-label="Relaxed Mode Rules">
+          <img src={assetPath("icons/rules-icon.png")} alt="" aria-hidden="true" />
+        </button>
+        <button className="icon-btn framed" onClick={() => setShowOptions(true)} aria-label="Board Options">
+          <img src={assetPath("icons/Options_icon.png")} alt="" aria-hidden="true" />
+        </button>
+      </div>
 
         {showMasters && (
           <aside className="panel masters">
@@ -1374,22 +1783,251 @@ function App() {
           </div>
           <div className="tooltip-action">
             {selectionLocked ? (
-              activeTile.state === "locked" ? (
-                <button className="action-btn" disabled={keys < activeTile.cost} onClick={() => handleTileAction(activeTile)}>
-                  <img src="/icons/slayer-key.png" alt="Key" /> Unlock ({activeTile.cost})
-                </button>
-              ) : activeTile.state === "unlocked" ? (
-                <button className="action-btn" onClick={() => handleTileAction(activeTile)}>
-                  Complete
-                </button>
-              ) : (
-                <button className="action-btn" disabled>
-                  Completed
-                </button>
-              )
+              <>
+                {activeQuestGuideUrl ? (
+                  <a className="pill-btn small" href={activeQuestGuideUrl} target="_blank" rel="noreferrer">
+                    <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
+                    Quick guide
+                  </a>
+                ) : null}
+                {activeTile.state === "locked" ? (
+                  <button className="action-btn" disabled={keys < activeTile.cost} onClick={() => handleTileAction(activeTile)}>
+                    <img src={assetPath("icons/slayer-key.png")} alt="Key" /> Unlock ({activeTile.cost})
+                  </button>
+                ) : activeTile.state === "unlocked" ? (
+                  <button className="action-btn" onClick={() => handleTileAction(activeTile)}>
+                    Complete
+                  </button>
+                ) : (
+                  <button className="action-btn" disabled>
+                    Completed
+                  </button>
+                )}
+              </>
             ) : (
               <div className="tooltip-hint">Hover to preview, click to lock and interact</div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showOptions && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal options-modal">
+            <div className="modal-header">
+              <div className="modal-title">Board Options</div>
+              <button className="close" onClick={() => setShowOptions(false)}>
+                X
+              </button>
+            </div>
+            <div className="list">
+              <div className="list-row">
+                <div>
+                  <div>Reset Board</div>
+                  <div className="muted">Generate a fresh Slayer board.</div>
+                </div>
+                <button
+                  className="pill-btn"
+                  onClick={() => {
+                    setShowOptions(false);
+                    setPendingBoardAction("generate");
+                    setShowExemptModal(true);
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+              {!boardCaps && (
+                <div className="list-row">
+                  <div>
+                    <div>Convert legacy board</div>
+                    <div className="muted">Max combat/Slayer skills and refund keys spent on those tiles.</div>
+                  </div>
+                  <button
+                    className="pill-btn"
+                    onClick={() => {
+                      setShowOptions(false);
+                      convertLegacyBoard();
+                    }}
+                  >
+                    Convert
+                  </button>
+                </div>
+              )}
+              <div className="list-row">
+                <div>
+                  <div>Center Board</div>
+                  <div className="muted">Jump back to the starting tile.</div>
+                </div>
+                <button
+                  className="pill-btn"
+                  onClick={() => {
+                    setShowOptions(false);
+                    centerOnTile("start");
+                  }}
+                >
+                  Center
+                </button>
+              </div>
+              <div className="list-row">
+                <div>
+                  <div>Reveal Board</div>
+                  <div className="muted">Peek at every tile without unlocking.</div>
+                </div>
+                <button
+                  className="pill-btn"
+                  onClick={() => {
+                    setShowOptions(false);
+                    revealEntireBoard();
+                  }}
+                >
+                  Reveal
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-subhead">Settings</div>
+            <div className="list">
+              <div className="list-row">
+                <div>
+                  <div>Version</div>
+                  <div className="muted">v{APP_VERSION}</div>
+                </div>
+                <button
+                  className="pill-btn"
+                  onClick={() => {
+                    setShowOptions(false);
+                    setShowChangelog(true);
+                  }}
+                >
+                  Changelog
+                </button>
+              </div>
+              <div className="list-row">
+                <div>
+                  <div>Install app</div>
+                  <div className="muted">Add SlayerScape as an app shortcut; click if the browser prompt is missing.</div>
+                </div>
+                <button className="pill-btn" onClick={handleInstallClick}>{installPrompt ? "Install" : "How to install"}</button>
+              </div>
+              <div className="list-row">
+                <div>
+                  <div>Export data</div>
+                  <div className="muted">Download boards, runs, and diary progress.</div>
+                </div>
+                <button className="pill-btn" onClick={handleExportData} disabled={isExporting}>
+                  {isExporting ? "Exporting..." : "Export"}
+                </button>
+              </div>
+              <div className="list-row">
+                <div>
+                  <div>Import data</div>
+                  <div className="muted">Replace local data with a saved export.</div>
+                </div>
+                <button className="pill-btn" onClick={handleImportClick} disabled={isImporting}>
+                  {isImporting ? "Importing..." : "Import"}
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/json"
+                  style={{ display: "none" }}
+                  onChange={handleImportFile}
+                />
+              </div>
+              {installStatus && (
+                <div className="list-row status-row">
+                  <div className="status-text">{installStatus}</div>
+                </div>
+              )}
+              {(dataMessage || dataError) && (
+                <div className={`list-row status-row${dataError ? " error" : ""}`}>
+                  <div className="status-text">{dataError ?? dataMessage}</div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-subhead">Credits</div>
+            <div className="list">
+              <div className="list-row">
+                <div>
+                  <div>RS3 SlayerScape</div>
+                  <div className="muted">
+                    Created by{" "}
+                    <a href="https://www.youtube.com/@vathreon" target="_blank" rel="noreferrer">
+                      Vathreon
+                    </a>
+                  </div>
+                </div>
+              </div>
+              <div className="list-row">
+                <div>
+                  <div>Original idea</div>
+                  <div className="muted">
+                    Inspired by{" "}
+                    <a href="https://www.youtube.com/@DanPlaysOSRS" target="_blank" rel="noreferrer">
+                      DanPlaysOSRS
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-subhead">Resources</div>
+            <div className="resource-links">
+              <a className="resource-link" href="https://runescape.wiki/" target="_blank" rel="noreferrer">
+                <img className="wiki-icon" src={assetPath("icons/wiki.jpg")} alt="RuneScape Wiki icon" />
+                <span>RuneScape Wiki</span>
+              </a>
+              <a
+                className="resource-link"
+                href="https://github.com/BlindsidedGames/SlayerScapeRS3/issues"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <img src={assetPath("icons/feedback-icon.png")} alt="Give feedback" />
+                <span>Give feedback</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showChangelog && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal changelog-modal">
+            <div className="modal-header">
+              <div className="modal-title">Changelog</div>
+              <button className="close" onClick={() => setShowChangelog(false)}>
+                X
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              Keep this updated when features change. Latest versions expand by default; click a version to collapse or expand it.
+            </p>
+            <div className="changelog-list">
+              {changelogEntries.map((entry) => {
+                const collapsed = collapsedVersions[entry.version] ?? false;
+                return (
+                  <div className="changelog-entry" key={entry.version}>
+                    <button className="changelog-toggle" onClick={() => toggleChangelogVersion(entry.version)}>
+                      <div className="changelog-meta">
+                        <div className="changelog-version">v{entry.version}</div>
+                        {entry.date ? <div className="changelog-date muted">{entry.date}</div> : null}
+                      </div>
+                      <span className="changelog-chevron">{collapsed ? "+" : "-"}</span>
+                    </button>
+                    {!collapsed && (
+                      <ul className="changelog-notes">
+                        {entry.notes.map((note, idx) => (
+                          <li key={`${entry.version}-note-${idx}`}>{note}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -1618,22 +2256,29 @@ function App() {
                 </div>
                 <div className="quest-list">
                   {availableQuests.length ? (
-                    availableQuests.map(({ quest }) => (
-                      <div key={quest.id} className="quest-card">
-                        <div className="quest-info">
-                          <div className="quest-name">{quest.name}</div>
-                          <div className="quest-meta muted">#{quest.order + 1}</div>
-                          {questQuestStatus.get(quest.id) ? (
-                            <div className="quest-status-tag">{formatQuestStatus(questQuestStatus.get(quest.id))}</div>
-                          ) : null}
+                    availableQuests.map(({ quest }) => {
+                      const guideUrl = quest.quickGuide ?? quickGuideUrl(quest.name);
+                      return (
+                        <div key={quest.id} className="quest-card">
+                          <div className="quest-info">
+                            <div className="quest-name">{quest.name}</div>
+                            <div className="quest-meta muted">#{quest.order + 1}</div>
+                            {questQuestStatus.get(quest.id) ? (
+                              <div className="quest-status-tag">{formatQuestStatus(questQuestStatus.get(quest.id))}</div>
+                            ) : null}
+                          </div>
+                          <div className="quest-actions">
+                            <a className="pill-btn small" href={guideUrl} target="_blank" rel="noreferrer">
+                              <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
+                              Quick guide
+                            </a>
+                            <button className="pill-btn" onClick={() => completeQuestTile(quest.id)}>
+                              Complete
+                            </button>
+                          </div>
                         </div>
-                        <div className="quest-actions">
-                          <button className="pill-btn" onClick={() => completeQuestTile(quest.id)}>
-                            Complete
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="empty-state">No quests unlocked right now.</div>
                   )}
@@ -1651,6 +2296,7 @@ function App() {
                       const cost = tile?.cost ?? 1;
                       const canUnlock = tile?.state === "locked" && keys >= cost;
                       const questStatusLabel = questQuestStatus.get(quest.id);
+                      const guideUrl = quest.quickGuide ?? quickGuideUrl(quest.name);
                       return (
                         <div key={quest.id} className="quest-card">
                           <div className="quest-info">
@@ -1659,6 +2305,10 @@ function App() {
                             {questStatusLabel ? <div className="quest-status-tag">{formatQuestStatus(questStatusLabel)}</div> : null}
                           </div>
                           <div className="quest-actions">
+                            <a className="pill-btn small" href={guideUrl} target="_blank" rel="noreferrer">
+                              <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
+                              Quick guide
+                            </a>
                             <button className="pill-btn" disabled={!canUnlock} onClick={() => unlockQuestTile(quest.id)}>
                               Unlock
                             </button>
@@ -1679,25 +2329,114 @@ function App() {
                 </div>
                 <div className="quest-list completed">
                   {completedQuests.length ? (
-                    completedQuests.map(({ quest }) => (
-                      <div key={quest.id} className="quest-card completed">
-                        <div className="quest-info">
-                          <div className="quest-name">{quest.name}</div>
-                          <div className="quest-meta muted">#{quest.order + 1}</div>
-                          {questQuestStatus.get(quest.id) ? (
-                            <div className="quest-status-tag">{formatQuestStatus(questQuestStatus.get(quest.id))}</div>
-                          ) : null}
+                    completedQuests.map(({ quest }) => {
+                      const guideUrl = quest.quickGuide ?? quickGuideUrl(quest.name);
+                      return (
+                        <div key={quest.id} className="quest-card completed">
+                          <div className="quest-info">
+                            <div className="quest-name">{quest.name}</div>
+                            <div className="quest-meta muted">#{quest.order + 1}</div>
+                            {questQuestStatus.get(quest.id) ? (
+                              <div className="quest-status-tag">{formatQuestStatus(questQuestStatus.get(quest.id))}</div>
+                            ) : null}
+                          </div>
+                          <div className="quest-actions">
+                            <a className="pill-btn small" href={guideUrl} target="_blank" rel="noreferrer">
+                              <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
+                              Quick guide
+                            </a>
+                            <span className="quest-status">Done</span>
+                          </div>
                         </div>
-                        <div className="quest-actions">
-                          <span className="quest-status">Done</span>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="empty-state">No quests completed yet.</div>
                   )}
                 </div>
               </div>
+            </div>
+        </div>
+      </div>
+      )}
+
+      {showExemptModal && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal options-modal">
+            <div className="modal-header">
+              <div className="modal-title">Skill exemptions</div>
+              <button
+                className="close"
+                onClick={() => {
+                  setShowExemptModal(false);
+                  setPendingBoardAction("none");
+                }}
+              >
+                X
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              Choose skills to start at their max level. These skills won't roll tiles on the new board.
+            </p>
+            <div className="list">
+              {exemptOptions.map((skill) => {
+                const checked = exemptSkillIds.includes(skill.id);
+                return (
+                  <label key={skill.id} className="list-row">
+                    <div>
+                      <div>{skill.name}</div>
+                      <div className="muted">Max {skill.maxLevel}</div>
+                    </div>
+                    <input type="checkbox" checked={checked} onChange={() => toggleExemptSkill(skill.id)} />
+                  </label>
+                );
+              })}
+            </div>
+            <div className="modal-actions" style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+              <button className="pill-btn" onClick={handleUseDefaultExempt}>
+                Use recommended
+              </button>
+              <button className="pill-btn" onClick={handleConfirmExempt}>
+                Generate board
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRules && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal rules-modal">
+            <div className="modal-header">
+              <div className="modal-title">Relaxed Slayer Mode Rules</div>
+              <button className="close" onClick={handleCloseRules}>
+                X
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 10 }}>
+              Pulled from RELAXED_MODE.md. Relaxed mode keeps RS3 normalcy while tying progression to Slayer tasks and board tiles.
+            </p>
+            <div className="rule-badges">
+              <span className="rule-badge">Trading & GE allowed</span>
+              <span className="rule-badge">Ground items allowed on-task</span>
+              <span className="rule-badge">Keys come from Slayer tasks</span>
+            </div>
+            <div className="rule-grid">
+              {relaxedRulesSections.map((section) => (
+                <div key={section.title} className="rule-card">
+                  <div className="rule-title">{section.title}</div>
+                  <ul>
+                    {section.bullets.map((item, idx) => (
+                      <li key={`${section.title}-${idx}`}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+            <div className="rules-footer">
+              <button className="pill-btn" onClick={handleCloseRules}>
+                Got it
+              </button>
             </div>
           </div>
         </div>

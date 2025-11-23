@@ -38,12 +38,17 @@ export interface Board {
   name: string;
   adjacency: "4-way" | "8-way";
   tiles: Tile[];
+  skillCapOverrides?: Record<string, number>;
 }
 
 export interface KeyPool {
   master: string;
   total: number;
   remaining: number;
+}
+
+export interface AchievementProgress {
+  tasks: boolean[];
 }
 
 export interface RunState {
