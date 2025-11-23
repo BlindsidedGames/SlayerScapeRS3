@@ -359,6 +359,9 @@ function App() {
   const [collapsedVersions, setCollapsedVersions] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(changelogEntries.map((entry, idx) => [entry.version, idx > 0]))
   );
+  const [isMobileLayout, setIsMobileLayout] = useState(
+    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false
+  );
   const [playerName, setPlayerName] = useState(() => {
     if (typeof window === "undefined") return "";
     return localStorage.getItem("playerName") ?? "";
@@ -1044,6 +1047,7 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
       const wasMobile = mobileLayoutRef.current;
       const next = window.innerWidth <= MOBILE_BREAKPOINT;
       mobileLayoutRef.current = next;
+      setIsMobileLayout(next);
       const crossedBreakpoint = (next && !wasMobile) || (!next && wasMobile);
       if (crossedBreakpoint && boardReady) {
         centerOnTile("start");
@@ -1663,13 +1667,6 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
             <img className="key-icon" src={assetPath("icons/slayer-key.png")} alt="Keys" />
             <span className="value">{keys}</span>
           </div>
-          <button
-            className="icon-btn"
-            onClick={() => setShowMasters((v) => !v)}
-            aria-label={showMasters ? "Hide Slayer Masters" : "Show Slayer Masters"}
-          >
-            <img src={assetPath("icons/skills/slayer.png")} alt="" aria-hidden="true" />
-          </button>
         </div>
         <div className="hud-float top-right">
           <form
@@ -1692,6 +1689,13 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
             {playerLookupStatus === "loading" ? "Fetching..." : "Lookup"}
           </button>
         </form>
+        <button
+          className="icon-btn framed"
+          onClick={() => setShowMasters((v) => !v)}
+          aria-label={showMasters ? "Hide Slayer Masters" : "Show Slayer Masters"}
+        >
+          <img src={assetPath("icons/skills/slayer.png")} alt="" aria-hidden="true" />
+        </button>
         <button className="icon-btn framed" onClick={() => setShowSkills(true)} aria-label="Unlocked Skills">
           <img src={assetPath("icons/skills-icon.png")} alt="" aria-hidden="true" />
         </button>
@@ -1714,10 +1718,13 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
       </div>
 
         {showMasters && (
-          <aside className="panel masters">
+          <aside className={`panel masters${isMobileLayout ? " mobile" : ""}`}>
             <div className="panel-title">
               <h3>Slayer Masters</h3>
               <span className="muted">1 key per tile</span>
+              <button className="panel-close" onClick={() => setShowMasters(false)}>
+                X
+              </button>
             </div>
             <div className="slayer-list">
               {masters.map((m) => {

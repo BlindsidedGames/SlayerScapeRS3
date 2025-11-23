@@ -7,6 +7,23 @@ export type ChangelogEntry = {
 // Keep newest entries first.
 export const changelogEntries: ChangelogEntry[] = [
   {
+    version: "0.0.10",
+    date: "2025-11-23",
+    notes: [
+      ""
+    ]
+  },
+  {
+    version: "0.0.9",
+    date: "2025-11-23",
+    notes: [
+      "On mobile, moved the Slayer Masters toggle into the icon tray, added a modal-style X close control on all layouts, and let the panel overlay other UI while staying beneath the top bar.",
+      "Raised the mobile Slayer Masters panel above the bottom bar with extra height and shadow to keep it readable and trimmed excess blank space.",
+      "Improved touch panning by preventing page scroll on the board surface.",
+      "Set the favicon to the Slayer icon and updated the page title to SlayerScape."
+    ]
+  },
+  {
     version: "0.0.8",
     date: "2025-11-23",
     notes: [

@@ -66,6 +66,7 @@ a {
   overflow: hidden;
   pointer-events: auto;
   z-index: 1;
+  touch-action: none;
 }
 
 .board-full {
@@ -75,6 +76,7 @@ a {
   place-items: center;
   transition: transform 60ms linear;
   cursor: grab;
+  touch-action: none;
 }
 
 .board-full:active {
@@ -273,10 +275,13 @@ a {
   background: linear-gradient(180deg, #1e1815, #130f0d);
   border: 1px solid rgba(244, 197, 106, 0.1);
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 47, 36, 0.35);
+  display: flex;
+  flex-direction: column;
 }
 
 .panel.masters .slayer-list {
-  max-height: calc(100vh - 180px);
+  flex: 1;
+  max-height: calc(100vh - 220px);
 }
 
 .panel-title {
@@ -284,10 +289,24 @@ a {
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .panel-title h3 {
   font-size: 17px;
+}
+
+.panel-close {
+  margin-left: auto;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #433529;
+  background: #2f2620;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .slayer-list {
@@ -1311,6 +1330,7 @@ a {
     border: 1px solid #3a2f24;
     border-radius: 14px;
     box-shadow: var(--shadow);
+    z-index: 8;
   }
 
   .hud-float.top-right .player-inline {
@@ -1333,18 +1353,23 @@ a {
   }
 
   .panel.masters {
-    top: auto;
-    left: 12px;
-    right: 12px;
-    bottom: calc(72px + env(safe-area-inset-bottom));
+    top: 82px;
+    left: 8px;
+    right: 8px;
+    bottom: auto;
     width: auto;
-    max-height: 52vh;
-    border-radius: 16px 16px 12px 12px;
+    max-height: calc(100vh - 140px);
+    border-radius: 18px;
     padding: 12px;
+    z-index: 11;
+  }
+
+  .panel.masters.mobile {
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 47, 36, 0.35);
   }
 
   .panel.masters .slayer-list {
-    max-height: calc(52vh - 120px);
+    max-height: calc(100vh - 220px);
     padding: 10px 8px 12px 12px;
   }
 
@@ -1365,6 +1390,12 @@ a {
   .btn-ghost {
     width: 100%;
     max-width: none;
+  }
+
+  .panel-close {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .skills-grid {
