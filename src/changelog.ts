@@ -10,7 +10,8 @@ export const changelogEntries: ChangelogEntry[] = [
     version: "0.0.11",
     date: "2025-11-23",
     notes: [
-      ""
+      "Recenters the board automatically after reload if the start tile is off-screen (common on mobile refresh) so you don’t lose the grid.",
+      "Locks the Slayer Masters modal font sizing on mobile/iOS and tightens the mobile card layout so the full details render instead of squashing into pill rows."
     ]
   },
   {

@@ -238,6 +238,11 @@ const clampOffset = (offset: { x: number; y: number }, limit = 1200) => ({
   y: Math.min(Math.max(offset.y, -limit), limit)
 });
 
+const isRectOnScreen = (rect: DOMRect, padding = 36) => {
+  const { innerWidth, innerHeight } = window;
+  return rect.right > padding && rect.left < innerWidth - padding && rect.bottom > padding && rect.top < innerHeight - padding;
+};
+
 const questFallback: Quest[] = sampleQuests.map((q, idx) => ({
   id: q.id,
   name: q.name,
@@ -388,6 +393,8 @@ function App() {
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const isDraggingRef = useRef(false);
   const mobileLayoutRef = useRef(false);
+  const offsetLimit = useMemo(() => Math.max(boardSize * 40, 360), [boardSize]);
+  const clampOffsetForBoard = useCallback((next: { x: number; y: number }) => clampOffset(next, offsetLimit), [offsetLimit]);
 
   const normalizeAchievementProgress = useCallback(
     (taskCount: number, existing?: AchievementProgress): AchievementProgress => ({
@@ -465,7 +472,7 @@ function App() {
       setGp(run?.gp ?? 0);
       setKeys(run?.keys ?? 0);
       setMasters(run?.masters?.length ? run.masters : slayerMasterSeed);
-      setOffset(run?.offset ? clampOffset(run.offset) : { x: 0, y: 0 });
+      setOffset(run?.offset ? clampOffsetForBoard(run.offset) : { x: 0, y: 0 });
 
       if (savedBoard?.tiles?.length) {
         const derivedSize = boardDimensionFromTiles(savedBoard.tiles);
@@ -1047,7 +1054,7 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
       setSelectedTile(null);
       setHoveredTile(null);
     }
-    const nextOffset = clampOffset({ x: dragRef.current.originX + dx, y: dragRef.current.originY + dy });
+    const nextOffset = clampOffsetForBoard({ x: dragRef.current.originX + dx, y: dragRef.current.originY + dy });
     offsetRef.current = nextOffset;
     boardTransformRef.current = `translate(${nextOffset.x}px, ${nextOffset.y}px)`;
     if (boardRef.current) {
@@ -1078,15 +1085,25 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     const targetY = window.innerHeight / 2;
     const dx = targetX - (rect.left + rect.width / 2);
     const dy = targetY - (rect.top + rect.height / 2);
-    setOffset((prev) => clampOffset({ x: prev.x + dx, y: prev.y + dy }));
-  }, []);
+    setOffset((prev) => clampOffsetForBoard({ x: prev.x + dx, y: prev.y + dy }));
+  }, [clampOffsetForBoard]);
+
+  const ensureStartVisible = useCallback(() => {
+    const startEl = tileRefs.current.get("start");
+    if (!startEl) return;
+    const rect = startEl.getBoundingClientRect();
+    if (!isRectOnScreen(rect)) {
+      centerOnTile("start");
+    }
+  }, [centerOnTile]);
 
   useLayoutEffect(() => {
     if (centerPendingRef.current) {
       centerPendingRef.current = false;
       centerOnTile("start");
     }
-  }, [board, centerOnTile]);
+    ensureStartVisible();
+  }, [board, centerOnTile, ensureStartVisible]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1104,6 +1121,12 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, [boardReady, centerOnTile]);
+
+  useEffect(() => {
+    if (!boardReady) return;
+    const timer = window.setTimeout(() => ensureStartVisible(), 120);
+    return () => clearTimeout(timer);
+  }, [boardReady, ensureStartVisible, boardSize]);
 
   const handleCompleteTask = (id: string) => {
     let awarded = 0;
@@ -1489,7 +1512,7 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     ) => {
       try {
         const now = new Date().toISOString();
-        const clampedOffset = clampOffset(nextOffset);
+        const clampedOffset = clampOffsetForBoard(nextOffset);
         const baseRun: RunState =
           activeRun ?? {
             id: "demo-run",
