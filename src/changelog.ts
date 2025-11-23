@@ -7,17 +7,13 @@ export type ChangelogEntry = {
 // Keep newest entries first.
 export const changelogEntries: ChangelogEntry[] = [
   {
-    version: "0.0.9",
-    date: "2025-11-23",
-    notes: [
-      "Prompted players to choose which combat/Constitution/Prayer/Summoning skills start maxed before every board generation or reset, skipping tiles for the selected skills."
-    ]
-  },
-  {
     version: "0.0.8",
     date: "2025-11-23",
     notes: [
-      "Stopped rolling combat, Slayer, and Necromancy skill tiles on new boards and auto-max their caps on start.",
+      "Removed the gp HUD display until the currency feature ships, keeping the keys toggle in place.",
+      "Added mobile-only layout tweaks (bottom HUD bar, compact masters drawer, stacked inputs/cards) without altering the desktop layout.",
+      "Recenters the board when crossing into or out of the mobile layout breakpoint so tiles stay visible after resizing.",
+      "Prompted players to choose which combat/Constitution/Prayer/Summoning skills start maxed before every board generation or reset, skipping tiles for the selected skills.",
       "Added a Convert Legacy Board option that maxes those combat caps and refunds keys already spent on their tiles."
     ]
   },

@@ -220,6 +220,8 @@ const coinIconBrackets = [
   { threshold: 1, src: assetPath("icons/coins/coins-1.png") }
 ] as const;
 
+const MOBILE_BREAKPOINT = 960;
+
 const getCoinIcon = (amount: number) => {
   // 10k art is used for any stack at or above that size to mirror the game's icon rules.
   const match = coinIconBrackets.find((entry) => amount >= entry.threshold);
@@ -379,6 +381,7 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const isDraggingRef = useRef(false);
+  const mobileLayoutRef = useRef(false);
 
   const normalizeAchievementProgress = useCallback(
     (taskCount: number, existing?: AchievementProgress): AchievementProgress => ({
@@ -1035,6 +1038,22 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     }
   }, [board, centerOnTile]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleResize = () => {
+      const wasMobile = mobileLayoutRef.current;
+      const next = window.innerWidth <= MOBILE_BREAKPOINT;
+      mobileLayoutRef.current = next;
+      const crossedBreakpoint = (next && !wasMobile) || (!next && wasMobile);
+      if (crossedBreakpoint && boardReady) {
+        centerOnTile("start");
+      }
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [boardReady, centerOnTile]);
+
   const handleCompleteTask = (id: string) => {
     let awarded = 0;
     const updatedMasters = masters.map((m) => {
@@ -1640,11 +1659,6 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
 
       <div className="overlay">
         <div className="hud-float top-left">
-          <div className="stat">
-            <img className="stat-icon" src={getCoinIcon(gp)} alt="Gold pieces" />
-            <span className="value">{numberFormatter.format(gp)}</span>
-            <span className="stat-label">gp</span>
-          </div>
           <div className="stat">
             <img className="key-icon" src={assetPath("icons/slayer-key.png")} alt="Keys" />
             <span className="value">{keys}</span>
