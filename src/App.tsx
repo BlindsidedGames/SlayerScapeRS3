@@ -25,11 +25,6 @@ type AchievementTaskEntry = {
   requirements?: DiaryRequirement;
 };
 
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
-};
-
 const QUEST_STRATEGY_URL =
   "https://runescape.wiki/api.php?action=parse&page=Quests/Strategy&prop=text&formatversion=2&format=json&origin=*";
 
@@ -224,6 +219,7 @@ const coinIconBrackets = [
 ] as const;
 
 const MOBILE_BREAKPOINT = 960;
+const BOARD_BACKUP_KEY = "slayerscape-board-backup:v1";
 
 const getCoinIcon = (amount: number) => {
   // 10k art is used for any stack at or above that size to mirror the game's icon rules.
@@ -382,8 +378,6 @@ function App() {
   const [playerQuestLookupStatus, setPlayerQuestLookupStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [playerQuestError, setPlayerQuestError] = useState<string | null>(null);
   const [lastLookupName, setLastLookupName] = useState<string | null>(null);
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [installStatus, setInstallStatus] = useState<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const offsetRef = useRef(offset);
   const boardTransformRef = useRef(`translate(${offset.x}px, ${offset.y}px)`);
@@ -441,38 +435,85 @@ function App() {
     }
   }, [hasSeenRules]);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const handleBeforeInstall = (event: Event) => {
-      event.preventDefault();
-      setInstallStatus(null);
-      setInstallPrompt(event as BeforeInstallPromptEvent);
-    };
-    const handleAppInstalled = () => {
-      setInstallPrompt(null);
-      setInstallStatus("App installed");
-    };
-    window.addEventListener("beforeinstallprompt", handleBeforeInstall);
-    window.addEventListener("appinstalled", handleAppInstalled);
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
-      window.removeEventListener("appinstalled", handleAppInstalled);
-    };
-  }, []);
+  const restoreFromBackup = useCallback(
+    (fallbackSize = 9) => {
+      if (typeof window === "undefined") return false;
+      try {
+        const raw = localStorage.getItem(BOARD_BACKUP_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw) as {
+          board?: Tile[];
+          caps?: Record<string, number> | null;
+          boardSize?: number;
+          run?: Partial<RunState>;
+        };
+        if (!Array.isArray(parsed.board) || parsed.board.length === 0) return false;
+        const derivedSize = boardDimensionFromTiles(parsed.board);
+        const size = derivedSize || parsed.boardSize || parsed.run?.boardSize || fallbackSize;
+        const boardSizeToUse = size || fallbackSize || 9;
+        const offsetLimit = Math.max(boardSizeToUse * 40, 360);
+        const savedOffset =
+          parsed.run?.offset && typeof parsed.run.offset.x === "number" && typeof parsed.run.offset.y === "number"
+            ? clampOffset(parsed.run.offset, offsetLimit)
+            : { x: 0, y: 0 };
+        const gpValue = typeof parsed.run?.gp === "number" ? parsed.run.gp : 0;
+        const keyValue = typeof parsed.run?.keys === "number" ? parsed.run.keys : 0;
+        const mastersValue = parsed.run?.masters?.length ? parsed.run.masters : slayerMasterSeed;
+
+        setBoard(parsed.board);
+        setBoardSize(boardSizeToUse);
+        setBoardCaps(parsed.caps ?? null);
+        setRestoredBoard(true);
+        setGp(gpValue);
+        setKeys(keyValue);
+        setMasters(mastersValue);
+        setOffset(savedOffset);
+        if (parsed.run) {
+          setActiveRun({
+            id: parsed.run.id ?? "demo-run",
+            name: parsed.run.name ?? "Demo Run",
+            ruleConfigId: parsed.run.ruleConfigId ?? "relaxed-mode",
+            boardId: parsed.run.boardId ?? "starter-board",
+            gp: gpValue,
+            keys: keyValue,
+            masters: mastersValue,
+            offset: savedOffset,
+            boardSize: boardSizeToUse,
+            history: parsed.run.history ?? [],
+            createdAt: parsed.run.createdAt ?? new Date().toISOString(),
+            updatedAt: parsed.run.updatedAt ?? new Date().toISOString()
+          });
+        }
+        return true;
+    } catch (err) {
+      console.error("Backup restore failed", err);
+      return false;
+    }
+  },
+    [setBoard, setBoardSize, setBoardCaps, setRestoredBoard, setGp, setKeys, setMasters, setOffset, setActiveRun]
+  );
 
   const hydrateFromDb = useCallback(async () => {
+    let fallbackBoardSize = 9;
+    let restored = false;
     try {
       await seedDefaults();
       const run = (await db.runs.get("demo-run")) ?? (await db.runs.toCollection().first());
       const savedBoard = run ? await db.boards.get(run.boardId) : null;
-      const fallbackBoardSize = run?.boardSize ?? 9;
+      fallbackBoardSize = run?.boardSize ?? fallbackBoardSize;
       const savedCaps = savedBoard?.skillCapOverrides ?? null;
 
       setActiveRun(run ?? null);
       setGp(run?.gp ?? 0);
       setKeys(run?.keys ?? 0);
       setMasters(run?.masters?.length ? run.masters : slayerMasterSeed);
-      setOffset(run?.offset ? clampOffsetForBoard(run.offset) : { x: 0, y: 0 });
+
+      const offsetLimit = Math.max((run?.boardSize ?? fallbackBoardSize) * 40, 360);
+      const savedOffset =
+        run?.offset && typeof run.offset.x === "number" && typeof run.offset.y === "number"
+          ? clampOffset(run.offset, offsetLimit)
+          : { x: 0, y: 0 };
+      setOffset(savedOffset);
 
       if (savedBoard?.tiles?.length) {
         const derivedSize = boardDimensionFromTiles(savedBoard.tiles);
@@ -480,18 +521,24 @@ function App() {
         setBoardSize(derivedSize || fallbackBoardSize);
         setBoardCaps(savedCaps);
         setRestoredBoard(true);
-      } else {
-        setBoard([]);
-        setBoardSize(fallbackBoardSize);
-        setBoardCaps(null);
-        setRestoredBoard(false);
+        restored = true;
       }
     } catch (err) {
       console.error("Failed to load saved state", err);
     } finally {
+      if (!restored) {
+        const didRestoreBackup = restoreFromBackup(fallbackBoardSize);
+        if (!didRestoreBackup) {
+          setBoard([]);
+          setBoardSize(fallbackBoardSize);
+          setBoardCaps(null);
+          setRestoredBoard(false);
+          setOffset({ x: 0, y: 0 });
+        }
+      }
       setBoardReady(true);
     }
-  }, []);
+  }, [restoreFromBackup]);
 
   useEffect(() => {
     void hydrateFromDb();
@@ -979,6 +1026,14 @@ function App() {
         state: "claimed"
       };
 
+      const resetOffset = { x: 0, y: 0 };
+      setOffset(resetOffset);
+      offsetRef.current = resetOffset;
+      boardTransformRef.current = `translate(${resetOffset.x}px, ${resetOffset.y}px)`;
+      if (boardRef.current) {
+        boardRef.current.style.transform = boardTransformRef.current;
+      }
+
       setBoard([startTile, ...placedTiles]);
       setBoardCaps(baseCaps);
       setBoardSize(size);
@@ -1127,6 +1182,12 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     const timer = window.setTimeout(() => ensureStartVisible(), 120);
     return () => clearTimeout(timer);
   }, [boardReady, ensureStartVisible, boardSize]);
+
+  useEffect(() => {
+    if (!boardReady || !restoredBoard) return;
+    const timer = window.setTimeout(() => ensureStartVisible(), 200);
+    return () => clearTimeout(timer);
+  }, [boardReady, restoredBoard, ensureStartVisible]);
 
   const handleCompleteTask = (id: string) => {
     let awarded = 0;
@@ -1510,30 +1571,30 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
       nextOffset = offset,
       nextCaps = boardCaps
     ) => {
-      try {
-        const now = new Date().toISOString();
-        const clampedOffset = clampOffsetForBoard(nextOffset);
-        const baseRun: RunState =
-          activeRun ?? {
-            id: "demo-run",
-            name: "Demo Run",
-            ruleConfigId: "relaxed-mode",
-            boardId: "starter-board",
-            gp: nextGp,
-            keys: nextKeys,
-            history: [],
-            createdAt: now,
-            updatedAt: now
-          };
-        const updatedRun: RunState = {
-          ...baseRun,
+      const clampedOffset = clampOffsetForBoard(nextOffset);
+      const now = new Date().toISOString();
+      const baseRun: RunState =
+        activeRun ?? {
+          id: "demo-run",
+          name: "Demo Run",
+          ruleConfigId: "relaxed-mode",
+          boardId: "starter-board",
           gp: nextGp,
           keys: nextKeys,
-          masters: nextMasters,
-          offset: clampedOffset,
-          boardSize,
+          history: [],
+          createdAt: now,
           updatedAt: now
         };
+      const updatedRun: RunState = {
+        ...baseRun,
+        gp: nextGp,
+        keys: nextKeys,
+        masters: nextMasters,
+        offset: clampedOffset,
+        boardSize,
+        updatedAt: now
+      };
+      try {
         await db.transaction("rw", [db.runs, db.boards], async () => {
           await db.boards.put({
             id: baseRun.boardId,
@@ -1547,6 +1608,33 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
         setActiveRun(updatedRun);
       } catch (err) {
         console.error("Failed to persist state", err);
+      } finally {
+        if (typeof window !== "undefined") {
+          try {
+            const backup = {
+              board: nextBoard,
+              caps: nextCaps ?? null,
+              boardSize,
+              run: {
+                id: updatedRun.id,
+                name: updatedRun.name,
+                boardId: updatedRun.boardId,
+                ruleConfigId: updatedRun.ruleConfigId,
+                history: updatedRun.history,
+                createdAt: updatedRun.createdAt,
+                updatedAt: updatedRun.updatedAt,
+                gp: nextGp,
+                keys: nextKeys,
+                masters: nextMasters,
+                offset: clampedOffset,
+                boardSize
+              }
+            };
+            localStorage.setItem(BOARD_BACKUP_KEY, JSON.stringify(backup));
+          } catch (err) {
+            console.warn("Failed to persist local backup", err);
+          }
+        }
       }
     },
     [activeRun, board, boardCaps, boardSize, gp, keys, masters, offset]
@@ -1556,27 +1644,6 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     if (!boardReady) return;
     persistState(board, gp, keys, masters, offset, boardCaps);
   }, [board, boardCaps, gp, keys, masters, offset, boardReady, persistState]);
-
-  const handleInstallClick = useCallback(async () => {
-    if (!installPrompt) {
-      setInstallStatus("Install prompt not available. Use the browser menu to install.");
-      return;
-    }
-    try {
-      await installPrompt.prompt();
-      const choice = await installPrompt.userChoice;
-      setInstallStatus(
-        choice?.outcome === "accepted"
-          ? "Install started—confirm in your browser."
-          : "Install dismissed."
-      );
-    } catch (err) {
-      console.error("Install prompt failed", err);
-      setInstallStatus("Could not show the install prompt. Try your browser menu.");
-    } finally {
-      setInstallPrompt(null);
-    }
-  }, [installPrompt]);
 
   const handleExportData = useCallback(async () => {
     try {
@@ -1681,6 +1748,15 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
               const frontier = isHiddenFrontier(tile);
               const shouldShowContent = tile.state !== "hidden";
               const skillIcon = getSkillIcon(tile.payload.skill);
+              const isStartTile = tile.id === "start";
+              const startIcon = getSkillIcon("slayer");
+              const tileIcon =
+                isStartTile
+                  ? startIcon ?? typeIcons.utility
+                  : tile.type === "skill_band" && skillIcon
+                  ? skillIcon
+                  : typeIcons[tile.type] ?? typeIcons.utility;
+              const tileAlt = isStartTile ? "Start" : tile.type === "skill_band" ? tile.payload.label : tile.type;
               return (
                 <div
                   key={tile.id}
@@ -1706,18 +1782,14 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
                   {shouldShowContent && (
                     <>
                       <div className="tile-icon">
-                        {tile.type === "skill_band" && skillIcon ? (
-                          <img src={skillIcon} alt={tile.payload.label} draggable={false} />
-                        ) : (
-                          <img src={typeIcons[tile.type] ?? typeIcons.utility} alt={tile.type} draggable={false} />
-                        )}
+                        <img src={tileIcon} alt={tileAlt} draggable={false} />
                       </div>
                       {tile.state === "locked" && (
                         <div className="tile-overlay lock" aria-hidden="true">
                           <img src={assetPath("icons/lock.png")} alt="" />
                         </div>
                       )}
-                      {tile.state === "claimed" && (
+                      {tile.state === "claimed" && !isStartTile && (
                         <div className="tile-overlay tick" aria-hidden="true">
                           <img src={assetPath("icons/check.png")} alt="" />
                         </div>
@@ -1996,13 +2068,6 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
               </div>
               <div className="list-row">
                 <div>
-                  <div>Install app</div>
-                  <div className="muted">Add SlayerScape as an app shortcut; click if the browser prompt is missing.</div>
-                </div>
-                <button className="pill-btn" onClick={handleInstallClick}>{installPrompt ? "Install" : "How to install"}</button>
-              </div>
-              <div className="list-row">
-                <div>
                   <div>Export data</div>
                   <div className="muted">Download boards, runs, and diary progress.</div>
                 </div>
@@ -2026,11 +2091,6 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
                   onChange={handleImportFile}
                 />
               </div>
-              {installStatus && (
-                <div className="list-row status-row">
-                  <div className="status-text">{installStatus}</div>
-                </div>
-              )}
               {(dataMessage || dataError) && (
                 <div className={`list-row status-row${dataError ? " error" : ""}`}>
                   <div className="status-text">{dataError ?? dataMessage}</div>

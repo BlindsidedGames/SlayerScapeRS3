@@ -7,10 +7,14 @@ export type ChangelogEntry = {
 // Keep newest entries first.
 export const changelogEntries: ChangelogEntry[] = [
   {
-    version: "0.0.11",
+    version: "0.0.12",
     date: "2025-11-23",
     notes: [
-      "Recenters the board automatically after reload if the start tile is off-screen (common on mobile refresh) so you don’t lose the grid.",
+      "Backs up your board and run locally so refreshes on mobile restore the grid (and keep the legacy conversion prompt away) even if IndexedDB drops.",
+      "Resetting or generating a board now resets the pan offset and recenters on the start tile to keep it on-screen on mobile.",
+      "The starting tile now uses the Slayer icon without the checkmark overlay while keeping the green claimed styling.",
+      "Removed the Install App button from Settings since browser prompts weren't reliable here.",
+      "Recenters the board automatically after reload if the start tile is off-screen (common on mobile refresh) so you don't lose the grid.",
       "Locks the Slayer Masters modal font sizing on mobile/iOS and tightens the mobile card layout so the full details render instead of squashing into pill rows."
     ]
   },
@@ -19,7 +23,7 @@ export const changelogEntries: ChangelogEntry[] = [
     date: "2025-11-23",
     notes: [
       "Stopped Safari/iOS from auto-resizing text and switched the PWA to auto-update so the Slayer Masters modal matches the intended layout on mobile installs.",
-      "Cached the RuneScape quest scrape for 24 hours and deferred it slightly so we don’t re-parse the huge wiki page on every visit, easing mobile CPU and battery load."
+      "Cached the RuneScape quest scrape for 24 hours and deferred it slightly so we don't re-parse the huge wiki page on every visit, easing mobile CPU and battery load."
     ]
   },
   {
