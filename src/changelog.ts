@@ -7,10 +7,18 @@ export type ChangelogEntry = {
 // Keep newest entries first.
 export const changelogEntries: ChangelogEntry[] = [
   {
-    version: "0.0.10",
+    version: "0.0.11",
     date: "2025-11-23",
     notes: [
       ""
+    ]
+  },
+  {
+    version: "0.0.10",
+    date: "2025-11-23",
+    notes: [
+      "Stopped Safari/iOS from auto-resizing text and switched the PWA to auto-update so the Slayer Masters modal matches the intended layout on mobile installs.",
+      "Cached the RuneScape quest scrape for 24 hours and deferred it slightly so we don’t re-parse the huge wiki page on every visit, easing mobile CPU and battery load."
     ]
   },
   {

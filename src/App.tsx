@@ -117,6 +117,9 @@ const formatTitleCase = (value: string) => value.replace(/\b\w/g, (c) => c.toUpp
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, "")}`;
 
+const QUEST_CACHE_KEY = "quest-strategy-cache:v1";
+const QUEST_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h
+
 const quickGuideUrl = (title: string) => {
   const sanitized = title.trim().replace(/\s+/g, "_");
   return `https://runescape.wiki/w/${encodeURIComponent(sanitized)}/Quick_guide`;
@@ -495,27 +498,71 @@ function App() {
   }, [boardReady, hasSeenRules]);
 
   useEffect(() => {
-    const fetchQuests = async () => {
+    let cancelled = false;
+
+    const cached = (() => {
       try {
+        const raw = sessionStorage.getItem(QUEST_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as { quests?: Quest[]; timestamp?: number };
+        if (!Array.isArray(parsed?.quests) || !parsed.quests.length || typeof parsed.timestamp !== "number") return null;
+        const isFresh = Date.now() - parsed.timestamp < QUEST_CACHE_TTL_MS;
+        return { quests: parsed.quests, isFresh };
+      } catch (err) {
+        console.error("Quest cache parse failed", err);
+        return null;
+      }
+    })();
+
+    if (cached?.quests?.length) {
+      setQuests(cached.quests);
+      setQuestStatus("ready");
+      if (cached.isFresh) {
+        return () => {
+          cancelled = true;
+        };
+      }
+    }
+
+    const fetchQuests = async () => {
+      if (!cached?.quests?.length) {
         setQuestStatus("loading");
-        const res = await fetch(QUEST_STRATEGY_URL);
+      }
+
+      try {
+        const res = await fetch(QUEST_STRATEGY_URL, { cache: "no-store" });
         const data = await res.json();
         const html = data?.parse?.text as string | undefined;
         const list = parseQuestStrategyHtml(html);
         if (list?.length) {
+          if (cancelled) return;
           setQuests(list);
           setQuestStatus("ready");
-        } else {
-          setQuests(questFallback);
-          setQuestStatus("error");
+          try {
+            sessionStorage.setItem(QUEST_CACHE_KEY, JSON.stringify({ quests: list, timestamp: Date.now() }));
+          } catch (err) {
+            console.warn("Quest cache write failed", err);
+          }
+          return;
         }
       } catch (err) {
         console.error("Quest fetch failed", err);
+      }
+
+      if (cancelled) return;
+      if (!cached?.quests?.length) {
         setQuests(questFallback);
         setQuestStatus("error");
+      } else {
+        setQuestStatus("ready");
       }
     };
-    fetchQuests();
+
+    const timer = window.setTimeout(() => void fetchQuests(), cached?.quests?.length ? 200 : 60);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {

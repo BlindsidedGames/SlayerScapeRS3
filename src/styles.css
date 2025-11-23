@@ -13,6 +13,8 @@
   --text: #f2e9de;
   --shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
   font-family: "Manrope", system-ui, -apple-system, sans-serif;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
   background-color: var(--bg);
   color: var(--text);
 }
