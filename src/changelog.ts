@@ -10,6 +10,8 @@ export const changelogEntries: ChangelogEntry[] = [
     version: "0.0.12",
     date: "2025-11-23",
     notes: [
+      "Added a standalone quest step runner (tools/quest-wizard/index.html) that pulls wiki requirements and quick guide steps, then walks through them with a Next button and per-step highlighting.",
+      "Added a Guide steps button next to quest actions that opens the RuneScape Wiki quick guide steps in-app so you can follow them without leaving the modal.",
       "Backs up your board and run locally so refreshes on mobile restore the grid (and keep the legacy conversion prompt away) even if IndexedDB drops.",
       "Resetting or generating a board now resets the pan offset and recenters on the start tile to keep it on-screen on mobile.",
       "The starting tile now uses the Slayer icon without the checkmark overlay while keeping the green claimed styling.",

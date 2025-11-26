@@ -1,0 +1,664 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quest Step Runner</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f0e0c;
+        --panel: #181410;
+        --muted: #a79a8c;
+        --text: #f5ede4;
+        --accent: #f3c66a;
+        --accent-2: #8ecb7f;
+        --border: #2f251d;
+        --shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
+        --overlay-scale: 1;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at 20% 20%, rgba(243, 198, 106, 0.05), transparent 28%),
+          radial-gradient(circle at 80% 10%, rgba(142, 203, 127, 0.05), transparent 26%),
+          var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        padding: 20px;
+      }
+      h1 {
+        margin: 0 0 16px;
+      }
+      .panel {
+        background: linear-gradient(180deg, #1a1511, #13100d);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: var(--shadow);
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      input {
+        background: #211913;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        color: var(--text);
+        flex: 1;
+        min-width: 240px;
+      }
+      button {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #2a221d;
+        color: var(--text);
+        padding: 10px 12px;
+        cursor: pointer;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+      .status {
+        margin-top: 10px;
+        color: var(--muted);
+      }
+      .status.error {
+        color: #f3a5a5;
+      }
+      .sections {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .section {
+        background: #211913;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      /* Overlay mode: transparent chrome but keep controls and quest selection */
+      body.overlay-mode {
+        background: transparent !important;
+      }
+      body.overlay-mode .panel {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+      }
+      body.overlay-mode .footer,
+      body.overlay-mode .status {
+        display: none !important;
+      }
+
+      /* Optional scaling for OBS via ?scale=1.3 etc */
+      body.scaled {
+        transform: scale(var(--overlay-scale));
+        transform-origin: top left;
+        width: calc(100% / var(--overlay-scale));
+        height: calc(100% / var(--overlay-scale));
+      }
+      .section-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        align-items: center;
+        font-weight: 700;
+      }
+      .section-count {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .steps {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .step {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 8px 10px;
+        background: #1a120e;
+        color: var(--text);
+        line-height: 1.4;
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+      }
+      .step-icon {
+        width: 18px;
+        height: 18px;
+        margin-top: 2px;
+        flex-shrink: 0;
+        object-fit: contain;
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+      }
+      .step-body {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1;
+      }
+      .step-note {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+        padding-left: 8px;
+      }
+      .section.static .step {
+        border-style: dashed;
+        border-color: rgba(255, 255, 255, 0.15);
+        background: #18120e;
+      }
+      .step.active {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px rgba(243, 198, 106, 0.35), 0 10px 20px rgba(0, 0, 0, 0.4);
+      }
+      .step.done {
+        color: #8cbf85;
+        border-color: #335736;
+        background: #132013;
+        text-decoration: line-through;
+      }
+      .controls {
+        margin-top: 12px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .chip-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .chip {
+        background: rgba(243, 198, 106, 0.12);
+        color: var(--accent);
+        border: 1px solid rgba(243, 198, 106, 0.35);
+        border-radius: 999px;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .footer {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .link {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1>Quest Step Runner</h1>
+      <div class="row">
+        <input id="questName" type="text" placeholder="Quest name (e.g. Death Plateau)" />
+        <button id="loadBtn">Load quest</button>
+        <button id="resetBtn" disabled>Reset progress</button>
+      </div>
+      <div class="controls">
+        <button id="nextBtn" disabled>Next step</button>
+        <span class="muted" id="progressText">No quest loaded.</span>
+      </div>
+      <div class="status" id="status"></div>
+      <div class="sections" id="sections"></div>
+      <div class="footer">
+        <span>Source: RuneScape Wiki quick guide + quest page.</span>
+        <a class="link" href="https://runescape.wiki" target="_blank" rel="noreferrer">Wiki</a>
+      </div>
+    </div>
+
+    <script>
+      const questInput = document.getElementById("questName");
+      const loadBtn = document.getElementById("loadBtn");
+      const resetBtn = document.getElementById("resetBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const statusEl = document.getElementById("status");
+      const sectionsEl = document.getElementById("sections");
+      const progressText = document.getElementById("progressText");
+
+      const proxyUrls = (url) => [
+        url,
+        `https://corsproxy.io/?${encodeURIComponent(url)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+      ];
+
+      const CHAT_ICON_SRC = "../../public/icons/Quick_Chat_icon.png";
+
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").replace(/\[\d+\]/g, "").trim();
+      const tidyParens = (value) => value.replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").replace(/\(\s*(\d)/g, "($1");
+      const stripChatMarkers = (value) => value.replace(/\(\s*(?:\d+\s*•\s*)*(?:\d+\s*)?(?:✓|✔)?\s*\)\s*$/u, "").trim();
+
+      const uniqueList = (list) => {
+        const seen = new Set();
+        return list.filter((item) => {
+          const key = item.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+
+      const extractList = (node) => {
+        if (!node) return [];
+        const directLis = Array.from(node.querySelectorAll(":scope > li"));
+        if (directLis.length) {
+          return directLis.map((li) => normalize(li.textContent)).filter(Boolean);
+        }
+        if (node.innerHTML.includes("<br")) {
+          return node.innerHTML
+            .split(/<br\s*\/?>/gi)
+            .map((part) => normalize(part.replace(/<[^>]+>/g, "")))
+            .filter(Boolean);
+        }
+        const lis = Array.from(node.querySelectorAll("li"));
+        if (lis.length) {
+          return lis.map((li) => normalize(li.textContent)).filter(Boolean);
+        }
+        return normalize(node.textContent) ? [normalize(node.textContent)] : [];
+      };
+
+      const parseRequirements = (html, quickGuideHtml) => {
+        const categories = { quests: [], items: [], enemies: [] };
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const tables = Array.from(doc.querySelectorAll("table.infobox, table.infobox-quest, table.questdetails"));
+        tables.forEach((table) => {
+          table.querySelectorAll("tr").forEach((row) => {
+            const key = normalize(row.querySelector("th")?.textContent || "");
+            const val = row.querySelector("td");
+            if (!key || !val) return;
+            if (/quest requirement/i.test(key) || /requirements/i.test(key)) {
+              categories.quests.push(...extractList(val));
+            }
+            if (/items required/i.test(key) || /items needed/i.test(key) || /recommended/i.test(key)) {
+              categories.items.push(...extractList(val));
+            }
+            if (/enemies/i.test(key) || /boss/i.test(key)) {
+              categories.enemies.push(...extractList(val));
+            }
+          });
+        });
+
+        const steps = [];
+        if (categories.quests.length) steps.push({ text: `Quests: ${uniqueList(categories.quests).join("; ")}` });
+        if (categories.items.length) steps.push({ text: `Items: ${uniqueList(categories.items).join("; ")}` });
+        if (categories.enemies.length) steps.push({ text: `Enemies: ${uniqueList(categories.enemies).join("; ")}` });
+
+        return steps.length
+          ? [
+              {
+                title: "Requirements",
+                steps,
+                static: true
+              }
+            ]
+          : [];
+      };
+
+      const parseGuideSections = (html) => {
+        if (!html) return [];
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const root = doc.querySelector(".mw-parser-output") || doc.body;
+        if (!root) return [];
+        root.querySelectorAll(".toc, .rs-external-header-links, style, script, noscript").forEach((el) => el.remove());
+
+        const extractTooltipNotes = (li) => {
+          const notes = [];
+          li.querySelectorAll(".js-tooltip-wrapper").forEach((wrapper) => {
+            const note = tidyParens(normalize(wrapper.textContent));
+            if (note) notes.push(note);
+          });
+          return uniqueList(notes);
+        };
+
+      const hasChatIcon = (li) => {
+          if (li.querySelector("img[src*='Quick_Chat_icon'], img[alt*='Chat'], img[alt*='chat']")) return true;
+          if (li.querySelector(".chat-options, .chat-options-underline")) return true;
+          return false;
+        };
+
+        const baseText = (li) => {
+          const clone = li.cloneNode(true);
+          clone.querySelectorAll(".js-tooltip-wrapper, .hidden").forEach((n) => n.remove());
+          return stripChatMarkers(tidyParens(normalize(clone.textContent)));
+        };
+
+        const collectSteps = (nodes) => {
+          const steps = [];
+          nodes.forEach((node) => {
+            const lists = node.matches("ul, ol") ? [node] : Array.from(node.querySelectorAll("ul, ol"));
+            lists.forEach((list) => {
+              list.querySelectorAll("li").forEach((li) => {
+                const text = baseText(li);
+                const notes = extractTooltipNotes(li);
+                if (text) steps.push({ text, notes, chat: hasChatIcon(li) });
+              });
+            });
+            const paragraphs = node.matches("p") ? [node] : Array.from(node.querySelectorAll("p"));
+            paragraphs.forEach((p) => {
+              const text = tidyParens(normalize(p.textContent));
+              if (text) steps.push({ text, notes: [] });
+            });
+          });
+          return steps;
+        };
+
+        const headlines = Array.from(root.querySelectorAll("h2 .mw-headline"));
+        const sections = [];
+        headlines.forEach((headline, idx) => {
+          const parent = headline.parentElement;
+          const nextParent = headlines[idx + 1]?.parentElement ?? null;
+          const nodes = [];
+          for (let sib = parent?.nextElementSibling; sib; sib = sib.nextElementSibling) {
+            if (sib === nextParent) break;
+            if (sib.matches(".toc, style, script, noscript, .rs-external-header-links")) continue;
+            nodes.push(sib);
+          }
+          const steps = collectSteps(nodes);
+          if (steps.length) {
+            const title = headline.textContent?.trim() || `Section ${idx + 1}`;
+            if (/^overview$/i.test(title)) return;
+            if (/required for completing/i.test(title)) return;
+            const staticSection = /rewards|achievements/i.test(title);
+            sections.push({ title, steps, static: staticSection });
+          }
+        });
+
+        if (!sections.length) {
+          const steps = collectSteps(Array.from(root.querySelectorAll("ul, ol")));
+          if (steps.length) return [{ title: "Quick guide", steps }];
+        }
+
+        return sections;
+      };
+
+      const fetchJson = async (url) => {
+        for (const candidate of proxyUrls(url)) {
+          try {
+            const res = await fetch(candidate);
+            if (!res.ok || res.status === 429) continue;
+            return await res.json();
+          } catch (err) {
+            // try next
+          }
+        }
+        throw new Error("All fetch attempts failed");
+      };
+
+      let sections = [];
+      let currentActionIdx = 0;
+      let stepIndex = 0;
+      let hasStarted = false;
+      let singleStepMode = false;
+
+      const actionableSections = () => sections.filter((s) => !s.static && s.steps.length);
+
+      const updateProgress = () => {
+        const actionSections = actionableSections();
+        const totalSteps = actionSections.reduce((sum, s) => sum + s.steps.length, 0);
+        const doneSteps = actionSections.reduce((sum, s) => sum + s.steps.filter((step) => step.done).length, 0);
+        if (!totalSteps) {
+          progressText.textContent = "No actionable steps loaded.";
+          nextBtn.disabled = true;
+          resetBtn.disabled = sections.length === 0;
+          return;
+        }
+        const clampedSection = Math.min(currentActionIdx, Math.max(actionSections.length - 1, 0));
+        const sectionProgress = hasStarted ? clampedSection + 1 : 0;
+        progressText.textContent = `${doneSteps}/${totalSteps} steps done | Section ${sectionProgress}/${actionSections.length}`;
+        nextBtn.disabled = doneSteps === totalSteps && hasStarted;
+        resetBtn.disabled = false;
+      };
+
+      const renderSections = () => {
+        const actionSections = actionableSections();
+        const activeSection = hasStarted && actionSections.length ? actionSections[Math.min(currentActionIdx, actionSections.length - 1)] : null;
+        const allActionsDone = actionSections.length ? actionSections.every((s) => s.steps.every((st) => st.done)) : false;
+
+        sectionsEl.innerHTML = "";
+        sections.forEach((section) => {
+          const isActionable = !section.static;
+          const isActive = isActionable && activeSection && section === activeSection;
+          const showSection = allActionsDone
+            ? true
+            : section.static
+            ? section.title === "Requirements"
+              ? !hasStarted
+              : false
+            : isActive;
+          if (!showSection) return;
+
+          const secEl = document.createElement("div");
+          secEl.className = "section";
+          if (section.static) secEl.classList.add("static");
+          const header = document.createElement("div");
+          header.className = "section-header";
+          const titleEl = document.createElement("span");
+          titleEl.textContent = section.title;
+          header.appendChild(titleEl);
+          secEl.appendChild(header);
+          const list = document.createElement("ul");
+          list.className = "steps";
+          const baseIndex = singleStepMode && isActive && !allActionsDone ? stepIndex : 0;
+          const stepsForRender =
+            singleStepMode && isActive && !allActionsDone
+              ? section.steps.slice(stepIndex, stepIndex + 1)
+              : section.steps;
+          stepsForRender.forEach((step, stIdx) => {
+            const absoluteIdx = baseIndex + stIdx;
+            const li = document.createElement("li");
+            li.className = "step";
+            if (!section.static) {
+              if (isActive && absoluteIdx === stepIndex) li.classList.add("active");
+              if (step.done) li.classList.add("done");
+            }
+            if (step.chat) {
+              const icon = document.createElement("img");
+              icon.className = "step-icon";
+              icon.src = CHAT_ICON_SRC;
+              icon.alt = "Chat option";
+              li.appendChild(icon);
+            }
+            const body = document.createElement("div");
+            body.className = "step-body";
+            const textNode = document.createElement("span");
+            textNode.textContent = step.text;
+            body.appendChild(textNode);
+            if (step.notes?.length) {
+              step.notes.forEach((note) => {
+                const lines = note.split(/(?=(?:\u2713|\u2714)|(?:\d+\s))/g).map((line) => line.trim()).filter(Boolean);
+                (lines.length ? lines : [note]).forEach((line) => {
+                  const noteEl = document.createElement("span");
+                  noteEl.className = "step-note";
+                  noteEl.textContent = line;
+                  body.appendChild(noteEl);
+                });
+              });
+            }
+            li.appendChild(body);
+            list.appendChild(li);
+          });
+          secEl.appendChild(list);
+          sectionsEl.appendChild(secEl);
+        });
+        updateProgress();
+      };
+
+      const goToNext = () => {
+        const actionSections = actionableSections();
+        if (!actionSections.length) {
+          nextBtn.disabled = true;
+          return;
+        }
+
+        if (!hasStarted) {
+          hasStarted = true;
+          currentActionIdx = 0;
+          stepIndex = 0;
+          renderSections();
+          return;
+        }
+
+        let currentSection = actionSections[currentActionIdx] ?? actionSections[actionSections.length - 1];
+        if (!currentSection) return;
+
+        const step = currentSection.steps[stepIndex];
+        if (step) step.done = true;
+
+        const nextInSection = currentSection.steps.findIndex((s) => !s.done);
+        if (nextInSection !== -1) {
+          stepIndex = nextInSection;
+        } else {
+          const nextSectionIdx = actionSections.findIndex((s, idx) => idx > currentActionIdx && s.steps.some((st) => !st.done));
+          if (nextSectionIdx !== -1) {
+            currentActionIdx = nextSectionIdx;
+            stepIndex = actionSections[nextSectionIdx].steps.findIndex((st) => !st.done);
+          } else {
+            currentActionIdx = Math.min(currentActionIdx + 1, actionSections.length - 1);
+            stepIndex = 0;
+          }
+        }
+        renderSections();
+      };
+
+      const resetProgress = () => {
+        sections.forEach((section) => section.steps.forEach((s) => (s.done = false)));
+        currentActionIdx = 0;
+        stepIndex = 0;
+        hasStarted = false;
+        renderSections();
+      };
+
+      const loadQuest = async () => {
+        const questName = questInput.value.trim();
+        if (!questName) {
+          statusEl.textContent = "Enter a quest name first.";
+          statusEl.className = "status error";
+          return;
+        }
+        statusEl.textContent = "Loading quest and quick guide...";
+        statusEl.className = "status";
+        sectionsEl.innerHTML = "";
+        nextBtn.disabled = true;
+        resetBtn.disabled = true;
+        progressText.textContent = "Loading...";
+
+        const slug = questName.replace(/\s+/g, "_");
+        const guideUrl = `https://runescape.wiki/api.php?action=parse&page=${encodeURIComponent(slug)}/Quick_guide&prop=text&formatversion=2&format=json&origin=*`;
+        const pageUrl = `https://runescape.wiki/api.php?action=parse&page=${encodeURIComponent(slug)}&prop=text&formatversion=2&format=json&origin=*`;
+
+        try {
+          const [guideRes, pageRes] = await Promise.all([fetchJson(guideUrl), fetchJson(pageUrl)]);
+          const guideHtml = guideRes?.parse?.text;
+          const pageHtml = pageRes?.parse?.text;
+          const reqSections = parseRequirements(pageHtml || "", guideHtml || "");
+        const guideSections = parseGuideSections(guideHtml || "");
+        sections = [...reqSections, ...guideSections].map((s) => ({
+          ...s,
+          steps: s.steps.map((step) => ({
+            text: typeof step === "string" ? step : step.text,
+            notes: typeof step === "string" ? [] : step.notes ?? [],
+            chat: typeof step === "string" ? false : Boolean(step.chat),
+            done: false
+          })),
+          static: Boolean(s.static)
+        }));
+        if (!sections.length) {
+          throw new Error("No sections or steps found on the wiki pages.");
+        }
+        currentActionIdx = 0;
+        stepIndex = 0;
+        hasStarted = false;
+        renderSections();
+        statusEl.textContent = `Loaded "${questName}". Use Next step to walk through the checklist.`;
+        statusEl.className = "status";
+        } catch (err) {
+          console.error(err);
+          sections = [];
+          sectionsEl.innerHTML = "";
+          progressText.textContent = "No quest loaded.";
+          nextBtn.disabled = true;
+          resetBtn.disabled = true;
+          statusEl.textContent = err instanceof Error ? err.message : "Failed to load quest data.";
+          statusEl.className = "status error";
+        }
+      };
+
+      loadBtn.addEventListener("click", () => {
+        void loadQuest();
+      });
+
+      nextBtn.addEventListener("click", () => {
+        goToNext();
+      });
+
+      resetBtn.addEventListener("click", () => {
+        resetProgress();
+      });
+
+      questInput.addEventListener("keyup", (e) => {
+        if (e.key === "Enter") {
+          void loadQuest();
+        }
+      });
+
+      // Overlay mode: enable via ?overlay=1 to hide chrome/backgrounds (controls stay)
+      if (new URLSearchParams(window.location.search).get("overlay") === "1") {
+        document.body.classList.add("overlay-mode");
+      }
+      if (new URLSearchParams(window.location.search).get("current") === "1") {
+        singleStepMode = true;
+      }
+      const scaleParam = Number(new URLSearchParams(window.location.search).get("scale"));
+      if (Number.isFinite(scaleParam) && scaleParam > 0) {
+        document.documentElement.style.setProperty("--overlay-scale", String(scaleParam));
+        document.body.classList.add("scaled");
+      }
+
+      // default example
+      questInput.value = "Death Plateau";
+      void loadQuest();
+    </script>
+  </body>
+</html>
+
+
+
+

@@ -13,6 +13,7 @@ import { APP_VERSION } from "./version";
 import { changelogEntries } from "./changelog";
 
 type Quest = { id: string; name: string; order: number; quickGuide?: string };
+type QuickGuideSection = { title: string; steps: string[] };
 type SkillDef = { id: string; name: string; maxLevel: number; elite?: boolean };
 type Achievement = { id: string; label: string; tier: AchievementTier };
 type AchievementTaskEntry = {
@@ -118,6 +119,11 @@ const QUEST_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h
 const quickGuideUrl = (title: string) => {
   const sanitized = title.trim().replace(/\s+/g, "_");
   return `https://runescape.wiki/w/${encodeURIComponent(sanitized)}/Quick_guide`;
+};
+
+const quickGuideApiUrl = (title: string) => {
+  const sanitized = title.trim().replace(/\s+/g, "_");
+  return `https://runescape.wiki/api.php?action=parse&page=${encodeURIComponent(sanitized)}/Quick_guide&prop=text&formatversion=2&format=json&origin=*`;
 };
 
 const shuffle = <T,>(arr: T[]) => {
@@ -246,6 +252,63 @@ const questFallback: Quest[] = sampleQuests.map((q, idx) => ({
   quickGuide: quickGuideUrl(q.name)
 }));
 
+const parseQuickGuideSections = (html?: string): QuickGuideSection[] => {
+  if (!html) return [];
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const root = doc.querySelector(".mw-parser-output") ?? doc.body;
+  if (!root) return [];
+
+  root.querySelectorAll(".toc, .rs-external-header-links, style, script, noscript").forEach((el) => el.remove());
+
+  const normalize = (value?: string | null) => (value ?? "").replace(/\s+/g, " ").replace(/\[\d+\]/g, "").trim();
+
+  const collectSteps = (nodes: Element[]) => {
+    const steps: string[] = [];
+    nodes.forEach((node) => {
+      const lists = node.matches("ul, ol") ? [node] : Array.from(node.querySelectorAll("ul, ol"));
+      lists.forEach((list) => {
+        list.querySelectorAll("li").forEach((li) => {
+          const text = normalize(li.textContent);
+          if (text) steps.push(text);
+        });
+      });
+
+      const paragraphs = node.matches("p") ? [node] : Array.from(node.querySelectorAll("p"));
+      paragraphs.forEach((p) => {
+        const text = normalize(p.textContent);
+        if (text) steps.push(text);
+      });
+    });
+    return steps.filter((step, idx, arr) => step && arr.indexOf(step) === idx);
+  };
+
+  const headlines = Array.from(root.querySelectorAll<HTMLSpanElement>("h2 .mw-headline"));
+  const sections: QuickGuideSection[] = [];
+
+  headlines.forEach((headline, idx) => {
+    const parent = headline.parentElement;
+    const nextParent = headlines[idx + 1]?.parentElement ?? null;
+    const nodes: Element[] = [];
+    for (let sib = parent?.nextElementSibling; sib; sib = sib.nextElementSibling) {
+      if (sib === nextParent) break;
+      if (sib.matches(".toc, style, script, noscript, .rs-external-header-links")) continue;
+      nodes.push(sib);
+    }
+    const steps = collectSteps(nodes);
+    if (steps.length) {
+      sections.push({ title: headline.textContent?.trim() || `Section ${idx + 1}`, steps });
+    }
+  });
+
+  if (!sections.length) {
+    const steps = collectSteps(Array.from(root.querySelectorAll("ul, ol")));
+    if (steps.length) return [{ title: "Quick guide", steps }];
+  }
+
+  return sections.filter((section) => section.steps.length);
+};
+
 const parseQuestStrategyHtml = (html?: string): Quest[] => {
   if (!html) return [];
   const parser = new DOMParser();
@@ -326,6 +389,10 @@ function App() {
   const [quests, setQuests] = useState<Quest[]>([]);
   const [questStatus, setQuestStatus] = useState<"idle" | "loading" | "ready" | "error">("loading");
   const [skillStatus, setSkillStatus] = useState<"idle" | "loading" | "ready" | "error">("loading");
+  const [questGuideQuest, setQuestGuideQuest] = useState<Quest | null>(null);
+  const [questGuideSections, setQuestGuideSections] = useState<QuickGuideSection[]>([]);
+  const [questGuideStatus, setQuestGuideStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [questGuideError, setQuestGuideError] = useState<string | null>(null);
   const [board, setBoard] = useState<Tile[]>([]);
   const [boardSize, setBoardSize] = useState(9);
   const [exemptSkillIds, setExemptSkillIds] = useState<string[]>(EXEMPT_SKILL_IDS);
@@ -383,6 +450,8 @@ function App() {
   const boardTransformRef = useRef(`translate(${offset.x}px, ${offset.y}px)`);
   const tileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const centerPendingRef = useRef(false);
+  const questGuideCacheRef = useRef<Map<string, QuickGuideSection[]>>(new Map());
+  const questGuideRequestRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const isDraggingRef = useRef(false);
@@ -868,6 +937,7 @@ function App() {
   }, []);
 
   const orderedQuests = useMemo(() => (quests.length ? quests : questFallback), [quests]);
+  const questById = useMemo(() => new Map(orderedQuests.map((q) => [q.id, q])), [orderedQuests]);
   const questTiles = useMemo(() => board.filter((t) => t.type === "quest"), [board]);
   const questTileMap = useMemo(() => {
     const map = new Map<string, Tile>();
@@ -1063,7 +1133,9 @@ const activeTileId = selectedTile ?? hoveredTile;
 const activeTile = useMemo(() => board.find((t) => t.id === activeTileId) ?? null, [board, activeTileId]);
 const selectionLocked = selectedTile === activeTile?.id;
 const activeSkillIcon = getSkillIcon(activeTile?.payload.skill);
-const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeTile.payload.label) : null;
+const activeQuest = useMemo(() => (activeTile?.type === "quest" ? questById.get(activeTile.id) ?? null : null), [activeTile, questById]);
+const activeQuestGuideUrl = activeQuest ? quickGuideUrl(activeQuest.name) : null;
+const questGuideSourceUrl = questGuideQuest ? questGuideQuest.quickGuide ?? quickGuideUrl(questGuideQuest.name) : null;
 
   const updateTooltipPosition = useCallback(() => {
     if (!activeTileId) {
@@ -1496,6 +1568,68 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
     setShowQuests(true);
     void lookupPlayerQuests();
   }, [lookupPlayerQuests]);
+
+  const fetchQuickGuideHtml = async (questName: string) => {
+    const apiUrl = quickGuideApiUrl(questName);
+    try {
+      const res = await fetch(apiUrl, { cache: "no-store" });
+      const data = await res.json();
+      const html = (data as { parse?: { text?: string } })?.parse?.text;
+      if (typeof html === "string") return html;
+    } catch (err) {
+      console.warn("[Quick guide] Direct fetch failed, trying proxies", err);
+    }
+    const fallback = await tryFetchJson(apiUrl);
+    const html = (fallback as { parse?: { text?: string } })?.parse?.text;
+    return typeof html === "string" ? html : null;
+  };
+
+  const openQuestGuideSteps = (quest: Quest) => {
+    setQuestGuideQuest(quest);
+    setQuestGuideError(null);
+
+    const cached = questGuideCacheRef.current.get(quest.id);
+    if (cached?.length) {
+      setQuestGuideSections(cached);
+      setQuestGuideStatus("ready");
+      return;
+    }
+
+    const requestId = questGuideRequestRef.current + 1;
+    questGuideRequestRef.current = requestId;
+    setQuestGuideSections([]);
+    setQuestGuideStatus("loading");
+
+    const load = async () => {
+      try {
+        const html = await fetchQuickGuideHtml(quest.name);
+        if (questGuideRequestRef.current !== requestId) return;
+        const sections = parseQuickGuideSections(html);
+        if (sections.length) {
+          questGuideCacheRef.current.set(quest.id, sections);
+          setQuestGuideSections(sections);
+          setQuestGuideStatus("ready");
+        } else {
+          throw new Error("No quick guide steps were found on the wiki page.");
+        }
+      } catch (err: unknown) {
+        if (questGuideRequestRef.current !== requestId) return;
+        const message = err instanceof Error ? err.message : "Quick guide is unavailable right now.";
+        setQuestGuideError(message);
+        setQuestGuideStatus("error");
+      }
+    };
+
+    void load();
+  };
+
+  const closeQuestGuideSteps = () => {
+    questGuideRequestRef.current += 1;
+    setQuestGuideQuest(null);
+    setQuestGuideSections([]);
+    setQuestGuideStatus("idle");
+    setQuestGuideError(null);
+  };
 
   useEffect(() => {
     if (!playerName.trim()) return;
@@ -1947,6 +2081,11 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
           <div className="tooltip-action">
             {selectionLocked ? (
               <>
+                {activeQuest ? (
+                  <button className="pill-btn small" onClick={() => openQuestGuideSteps(activeQuest)}>
+                    Guide steps
+                  </button>
+                ) : null}
                 {activeQuestGuideUrl ? (
                   <a className="pill-btn small" href={activeQuestGuideUrl} target="_blank" rel="noreferrer">
                     <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
@@ -2419,6 +2558,9 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
                             ) : null}
                           </div>
                           <div className="quest-actions">
+                            <button className="pill-btn small" onClick={() => openQuestGuideSteps(quest)}>
+                              Guide steps
+                            </button>
                             <a className="pill-btn small" href={guideUrl} target="_blank" rel="noreferrer">
                               <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
                               Quick guide
@@ -2456,6 +2598,9 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
                             {questStatusLabel ? <div className="quest-status-tag">{formatQuestStatus(questStatusLabel)}</div> : null}
                           </div>
                           <div className="quest-actions">
+                            <button className="pill-btn small" onClick={() => openQuestGuideSteps(quest)}>
+                              Guide steps
+                            </button>
                             <a className="pill-btn small" href={guideUrl} target="_blank" rel="noreferrer">
                               <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
                               Quick guide
@@ -2492,6 +2637,9 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
                             ) : null}
                           </div>
                           <div className="quest-actions">
+                            <button className="pill-btn small" onClick={() => openQuestGuideSteps(quest)}>
+                              Guide steps
+                            </button>
                             <a className="pill-btn small" href={guideUrl} target="_blank" rel="noreferrer">
                               <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
                               Quick guide
@@ -2588,6 +2736,66 @@ const activeQuestGuideUrl = activeTile?.type === "quest" ? quickGuideUrl(activeT
               <button className="pill-btn" onClick={handleCloseRules}>
                 Got it
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {questGuideQuest && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal quest-guide-modal">
+            <div className="modal-header">
+              <div className="modal-title">{questGuideQuest.name} quick guide steps</div>
+              <button className="close" onClick={closeQuestGuideSteps}>
+                X
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 10 }}>
+              Pulled directly from the RuneScape Wiki quick guide. Steps are cached for each quest after the first load.
+            </p>
+            {questGuideStatus === "loading" ? (
+              <div className="status-row" style={{ marginBottom: 10 }}>
+                <div className="status-text">Fetching steps from the wiki...</div>
+              </div>
+            ) : null}
+            {questGuideStatus === "error" ? (
+              <div className="status-row error" style={{ marginBottom: 10, gap: 8 }}>
+                <div className="status-text">{questGuideError ?? "Quick guide steps are unavailable right now."}</div>
+                <button className="pill-btn small" onClick={() => openQuestGuideSteps(questGuideQuest)}>
+                  Retry
+                </button>
+              </div>
+            ) : null}
+            {questGuideStatus === "ready" && questGuideSections.length ? (
+              <div className="quest-guide-steps">
+                {questGuideSections.map((section) => (
+                  <div key={`${questGuideQuest.id}-${section.title}`} className="guide-section">
+                    <div className="guide-section-title">{section.title}</div>
+                    <ol>
+                      {section.steps.map((step, idx) => (
+                        <li key={`${section.title}-${idx}`}>{step}</li>
+                      ))}
+                    </ol>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {questGuideStatus === "ready" && !questGuideSections.length ? (
+              <div className="empty-state" style={{ marginTop: 6 }}>No steps found on the quick guide.</div>
+            ) : null}
+            <div
+              className="modal-actions"
+              style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+            >
+              <div className="muted" style={{ fontSize: 12 }}>
+                Source: RuneScape Wiki quick guide.
+              </div>
+              {questGuideSourceUrl ? (
+                <a className="pill-btn small" href={questGuideSourceUrl} target="_blank" rel="noreferrer">
+                  <img className="pill-icon" src={wikiIcon} alt="" aria-hidden="true" />
+                  Open on wiki
+                </a>
+              ) : null}
             </div>
           </div>
         </div>

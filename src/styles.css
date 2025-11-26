@@ -777,6 +777,10 @@ a {
   width: min(760px, 96vw);
 }
 
+.modal.quest-guide-modal {
+  width: min(820px, 96vw);
+}
+
 .modal.achievements-modal {
   width: min(760px, 96vw);
 }
@@ -1145,6 +1149,40 @@ a {
 .quest-list {
   display: grid;
   gap: 10px;
+}
+
+.quest-guide-steps {
+  display: grid;
+  gap: 10px;
+  max-height: 54vh;
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.guide-section {
+  background: #241d18;
+  border: 1px solid #3a2f24;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.guide-section-title {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.guide-section ol {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.guide-section li {
+  line-height: 1.45;
 }
 
 .quest-card {
